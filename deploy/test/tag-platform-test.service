@@ -1,0 +1,35 @@
+# ============================================================================
+# 测试环境 systemd 单元模板（部署到 /etc/systemd/system/tag-platform-test.service）
+#
+# 与本地环境一致：基础设施由 docker compose 提供，应用以 java -jar 直跑。
+# 依赖 /etc/tag-platform-test/tag-platform-test.env（不入库）。
+# ============================================================================
+[Unit]
+Description=Tag Platform Test Server
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=tagplatform
+Group=tagplatform
+WorkingDirectory=/opt/tag-platform-test
+EnvironmentFile=/etc/tag-platform-test/tag-platform-test.env
+# 重启后容器先起、StarRocks FE 初始化较慢，先等 3306/9030 就绪
+ExecStartPre=/opt/tag-platform-test/wait-deps.sh
+ExecStart=/usr/bin/java -Xms256m -Xmx1g -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/var/log/tag-platform-test -Duser.timezone=Asia/Shanghai -Dfile.encoding=UTF-8 -jar /opt/tag-platform-test/tag-platform-server.jar
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=400
+TimeoutStopSec=30
+KillSignal=SIGTERM
+LimitNOFILE=65535
+NoNewPrivileges=true
+PrivateTmp=true
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tag-platform-test
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,67 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: tag-platform
+  # 生产形态：MySQL 8（OB 兼容子集）。demo 模式见 application-demo.yml
+  datasource:
+    url: jdbc:mysql://localhost:3306/tag_platform?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    username: tag_app
+    password: tag_app_demo
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      timeout: 2s
+  flyway:
+    enabled: true
+    # db/migration：通用迁移（MySQL/H2 均兼容）；db/migration-mysql：MySQL 专属注释迁移
+    locations: classpath:db/migration,classpath:db/migration-mysql
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+    time-zone: Asia/Shanghai
+  # 控制台静态资源（index.html/style.css/app.js）每次协商缓存，避免升级后仍命中旧页面
+  web:
+    resources:
+      cache:
+        cachecontrol:
+          no-cache: true
+
+tag-platform:
+  # crypto.master-key 用于凭证 Secret 的可逆加密；生产环境务必通过环境变量覆盖
+  crypto:
+    master-key: ${TAG_PLATFORM_MASTER_KEY:tag-platform-demo-master-key-0123456789}
+  # kv: redis（生产）| memory（demo）；store: starrocks（生产）| h2（demo）
+  kv: redis
+  store: starrocks
+  starrocks:
+    url: jdbc:mysql://localhost:9030/tag_platform?useSSL=false&serverTimezone=Asia/Shanghai
+    username: root
+    password: ""
+    init-schema: true
+  limits:
+    ip-qps: 100
+    operator-qps: 20
+    object-tag-qps: 1
+    batch-max: 1000
+    timestamp-skew-seconds: 300
+    nonce-ttl-seconds: 60
+    idempotent-ttl-hours: 24
+  console:
+    token-ttl-hours: 8
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  health:
+    redis:
+      enabled: true
+
+logging:
+  level:
+    com.tagplatform: info
+  pattern:
+    console: "%d{HH:mm:ss.SSS} %-5level [%X{requestId:-}] %logger{36} - %msg%n"

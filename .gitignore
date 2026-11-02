@@ -1,0 +1,14 @@
+target/
+deploy/.env
+deploy/.env.test
+data/*.db
+data/*.trace.db
+data/.fleet-credential.*
+logs/
+*.log
+*.jar.tmp
+.idea/
+*.iml
+.vscode/
+.DS_Store
+node_modules/

@@ -1,0 +1,36 @@
+# ============================================================================
+# demo 模式：零外部依赖本地运行（H2 文件库模拟 MySQL + StarRocks，内存 KV 模拟 Redis）
+# 启动：java -jar server/target/tag-platform-server.jar --spring.profiles.active=demo
+#  或：./build.sh spring-boot:run -pl server -Dspring-boot.run.profiles=demo
+# ============================================================================
+spring:
+  datasource:
+    url: jdbc:h2:file:./data/tagplatform;MODE=MySQL;DB_CLOSE_DELAY=-1
+    username: sa
+    password: ""
+    driver-class-name: org.h2.Driver
+  flyway:
+    # demo 追加 db/migration-h2（标签值表仅在 demo 建入 H2；生产位于 StarRocks）
+    # migration-h2 目录使用 V1001+ 号段；已应用 V1001 的文件库再执行主序列新迁移（V3+）属乱序，demo 环境允许
+    locations: classpath:db/migration,classpath:db/migration-h2
+    out-of-order: true
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.redis.RedisRepositoriesAutoConfiguration
+
+tag-platform:
+  kv: memory
+  store: h2
+  starrocks:
+    # demo 下标签值表与元数据同库（migration-h2/V1001 已建表）
+    url: jdbc:h2:file:./data/tagplatform;MODE=MySQL;DB_CLOSE_DELAY=-1
+    username: sa
+    password: ""
+    driver-class-name: org.h2.Driver
+    init-schema: false
+
+management:
+  health:
+    redis:
+      enabled: false

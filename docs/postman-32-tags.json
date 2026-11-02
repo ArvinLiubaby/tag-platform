@@ -1,0 +1,118 @@
+{
+  "info": {
+    "name": "标签画像采集平台 · 标签查询（司机 + 车辆）",
+    "description": "组合查询接口：一次返回司机 + 车辆的标签当前值。签名由集合级 Pre-request Script 自动生成（HMAC-SHA256），变量可在集合 Variables 中修改。\n\n参数说明：\n- vehicle_plate：车辆标识（车牌号，如 苏A88801；普通 7 位 / 新能源 8 位），不再使用 VIN；旧参数 plate_no / vehicle_id 已废弃\n- tag_codes：可选；不传（或参数取消勾选）时返回该对象类型下的全部标签\n\n演示数据：车辆车牌范围 苏A88801 – 苏A88806；查询 苏A88888 格式合法但无数据，会返回全量 status=none 占位。\n\n使用前确认：\n1. 服务已启动（默认 8080 demo 实例）\n2. baseUrl / appKey / secret 与服务端租户凭证一致\n\n注意：每次发送都会生成新的 timestamp/nonce，可直接重复点击 Send。",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// HMAC-SHA256 签名：与服务端 SignatureVerifier 完全一致",
+          "// stringToSign = method + '\\n' + path + '\\n' + canonicalQuery + '\\n' + rawBody + '\\n' + timestamp + '\\n' + nonce",
+          "const appKey = pm.collectionVariables.get('appKey');",
+          "const secret = pm.collectionVariables.get('secret');",
+          "",
+          "const method = pm.request.method.toUpperCase();",
+          "const path = '/' + pm.request.url.path.map(s => pm.variables.replaceIn(s)).join('/');",
+          "",
+          "// canonicalQuery：key 字典序 + 同 key value 字典序（值用解码后原值）",
+          "const params = {};",
+          "pm.request.url.query.each(q => {",
+          "  if (q.disabled) return;",
+          "  const k = pm.variables.replaceIn(q.key);",
+          "  const v = pm.variables.replaceIn(q.value === undefined || q.value === null ? '' : String(q.value));",
+          "  (params[k] = params[k] || []).push(v);",
+          "});",
+          "const canonicalQuery = Object.keys(params).sort()",
+          "  .flatMap(k => params[k].sort().map(v => k + '=' + v))",
+          "  .join('&');",
+          "",
+          "const rawBody = (pm.request.body && pm.request.body.raw) ? pm.request.body.raw : '';",
+          "const timestamp = Date.now().toString();",
+          "const nonce = CryptoJS.lib.WordArray.random(16).toString(CryptoJS.enc.Hex);",
+          "const stringToSign = [method, path, canonicalQuery, rawBody, timestamp, nonce].join('\\n');",
+          "const signature = CryptoJS.HmacSHA256(stringToSign, secret).toString(CryptoJS.enc.Hex);",
+          "",
+          "pm.request.headers.upsert({ key: 'X-App-Key', value: appKey });",
+          "pm.request.headers.upsert({ key: 'X-Timestamp', value: timestamp });",
+          "pm.request.headers.upsert({ key: 'X-Nonce', value: nonce });",
+          "pm.request.headers.upsert({ key: 'X-Signature', value: signature });"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8080" },
+    { "key": "appKey", "value": "AK_RC_8f2a91" },
+    { "key": "secret", "value": "rc-secret-8f2a91-demo" },
+    { "key": "driverId", "value": "DRV85001" },
+    { "key": "vehiclePlate", "value": "苏A88801" },
+    {
+      "key": "tagCodes",
+      "value": "social_tendency,emotion_stability,driving_risk_attitude,eye_size,stutter_flag,language_style,route_type_pref,route_stability,operating_time_pref,avg_daily_mileage,avg_daily_duration,monthly_driving_days,operating_region_level,long_haul,avg_speeding_count,avg_severe_speeding_count,avg_fatigue_count,avg_distraction_count,avg_smoking_count,avg_phone_call_count,phone_reachability,comm_attitude,expression_clarity,vehicle_operating_attr,vehicle_operating_type,vehicle_ownership,driver_relation,cargo_source,transport_scope,cargo_type,industry_type,work_environment"
+    }
+  ],
+  "item": [
+    {
+      "name": "1. 查询全部标签（司机 + 车辆，tag_codes 不传）",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/open/objects/profile/combined?driver_id={{driverId}}&vehicle_plate={{vehiclePlate}}&include_empty=true",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "v1", "open", "objects", "profile", "combined"],
+          "query": [
+            { "key": "driver_id", "value": "{{driverId}}" },
+            { "key": "vehicle_plate", "value": "{{vehiclePlate}}" },
+            { "key": "tag_codes", "value": "{{tagCodes}}", "disabled": true },
+            { "key": "include_empty", "value": "true" },
+            { "key": "include_pending", "value": "false", "disabled": true }
+          ]
+        },
+        "description": "默认场景：tag_codes 不勾选（不发送），返回该对象类型下的全部可见在线标签。\n\nvehicle_plate 传车牌号（如 苏A88801），不再是 VIN。\n\n常用调整：\n- 只看有值标签：include_empty 改为 false\n- 包含待审核值：启用 include_pending 参数（默认 false）\n- 只查司机或只查车辆：删除另一个参数（至少保留一个）"
+      }
+    },
+    {
+      "name": "2. 只查 32 个标签（启用 tag_codes）",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/open/objects/profile/combined?driver_id={{driverId}}&vehicle_plate={{vehiclePlate}}&tag_codes={{tagCodes}}&include_empty=true",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "v1", "open", "objects", "profile", "combined"],
+          "query": [
+            { "key": "driver_id", "value": "{{driverId}}" },
+            { "key": "vehicle_plate", "value": "{{vehiclePlate}}" },
+            { "key": "tag_codes", "value": "{{tagCodes}}" },
+            { "key": "include_empty", "value": "true" },
+            { "key": "include_pending", "value": "false", "disabled": true }
+          ]
+        },
+        "description": "精确圈定清单-1015 的 32 个标签（driver 17 / vehicle 15）；无值标签以 status=none / tag_value=null 占位（include_empty=true）。"
+      }
+    },
+    {
+      "name": "3. 查询标签字典（全部可见标签定义）",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/open/tags",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "v1", "open", "tags"],
+          "query": [
+            { "key": "object_type", "value": "driver", "disabled": true },
+            { "key": "source_mode", "value": "manual", "disabled": true },
+            { "key": "category_code", "value": "risk_score", "disabled": true }
+          ]
+        },
+        "description": "返回本租户可见的在线标签定义（含 writable 写入开关、need_value_audit、source_mode、object_type 等字段）。可按 object_type / source_mode / category_code 过滤。"
+      }
+    }
+  ]
+}

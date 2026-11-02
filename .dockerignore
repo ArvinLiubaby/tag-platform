@@ -1,0 +1,14 @@
+# Docker 构建上下文排除（镜像构建只需要 POM 与 server/src）
+.git
+.idea
+.vscode
+data
+logs
+docs
+scripts
+deploy
+*.log
+*.iml
+**/target/
+sdk-java/src
+server/target

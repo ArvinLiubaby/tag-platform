@@ -1,0 +1,586 @@
+openapi: 3.0.3
+info:
+  title: 标签画像采集平台 · 开放 API
+  version: 1.0.0
+  description: |
+    业务系统通过开放 API 在对象（司机 / 车辆 / 车队 / 告警事件）上打标签。契约遵循「只增不删」。
+
+    ## HMAC-SHA256 签名
+    每个请求携带四个头：`X-App-Key`、`X-Timestamp`（毫秒，±300 秒偏差）、`X-Nonce`（60 秒内不可重复）、
+    `X-Signature`（hex 小写）。待签名字符串（`\n` 连接）：
+
+    ```
+    STRING_TO_SIGN = METHOD + "\n" + PATH + "\n" + CANONICAL_QUERY + "\n" + RAW_BODY + "\n" + TIMESTAMP + "\n" + NONCE
+    signature = hex(HMAC-SHA256(secret, STRING_TO_SIGN))
+    ```
+
+    - `PATH`：不含 query 的**编码后**路径（如 `/api/v1/open/objects/DRV%200001/profile`）
+    - `CANONICAL_QUERY`：key 字典序、同 key value 字典序，`k=v` 以 `&` 连接（URL 解码后的原值）
+    - `RAW_BODY`：请求体原文（GET 为空串）
+
+    ## 统一响应
+    `{ code, message, request_id, data }`；`code=0` 成功。鉴权类错误 HTTP 401/403，频控 429，
+    其余业务错误 HTTP 200 携带非 0 code（详见各接口说明）。
+
+    ## 写入语义
+    - 批量 ≤1000 条，**整批校验全过才受理**（all-or-nothing）
+    - `biz_request_id` 幂等（24h 内重复提交回放首次响应）
+    - 写入/作废只追加 `tag_value_history` + Outbox；画像数据源 `tag_value_latest` 由外部写入程序维护，**平台不再直接写入**（受理成功 ≠ 画像立即可查）
+    - 敏感标签（`need_value_audit=1`）的流水记为 `pending_audit`，`remark` 必填；平台值审核已停用（3013）
+    - 标签写入开关（`writable`）：`false` 的标签不可写入/作废，POST 写入与作废整批拒绝（3012）
+    - 频控：IP 100 QPS / 操作员 20 QPS / 同对象同标签 1 QPS（超限 429）
+servers:
+  - url: http://localhost:8080
+    description: 本地 / demo
+tags:
+  - name: tags
+    description: 标签字典
+  - name: write
+    description: 标签值写入与作废
+  - name: query
+    description: 画像与打标记录
+
+paths:
+  /api/v1/open/tags:
+    get:
+      tags: [tags]
+      summary: 标签字典
+      description: 返回当前凭证租户可见的在线标签（公开标签 + 本租户标签）。
+      parameters:
+        - name: category_code
+          in: query
+          required: false
+          schema: { type: string }
+          description: 按类目过滤（如 risk_score）
+        - name: object_type
+          in: query
+          required: false
+          schema: { type: string }
+          description: 按适用对象过滤（如 driver）；返回绑定该对象类型的标签（含未绑定/不限对象标签需自行区分）
+        - name: source_mode
+          in: query
+          required: false
+          schema: { type: string, enum: [manual, statistics, hybrid, algo] }
+          description: 按打标来源过滤；`manual` 专供客服系统拉取「需人工打标」标签清单
+        - $ref: '#/components/parameters/XAppKey'
+        - $ref: '#/components/parameters/XTimestamp'
+        - $ref: '#/components/parameters/XNonce'
+        - $ref: '#/components/parameters/XSignature'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/BaseResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          tags:
+                            type: array
+                            items: { $ref: '#/components/schemas/TagView' }
+                          total: { type: integer }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/open/tag-values/write:
+    post:
+      tags: [write]
+      summary: 批量写入标签值
+      description: |
+        整批受理（≤1000 条）。整批校验全部通过才写入；任一条失败则整批拒绝，
+        返回非 0 code（HTTP 200），message 形如「第 N 条校验失败: 原因」，
+        data 含 index / object_type / object_id / tag_code / reason。
+        受理成功后逐条结果在 `results[].status`：`accepted`（已受理）/ `pending_audit`（敏感标签流水待处理）。
+                写入仅追加打标流水，`tag_value_latest` 由外部写入程序维护。
+        相同 `biz_request_id` 重复提交回放首次响应。
+        标签写入开关（`writable=false`）关闭时该标签整批拒绝（code 3012，message 含「不允许写入」）。
+      parameters:
+        - $ref: '#/components/parameters/XAppKey'
+        - $ref: '#/components/parameters/XTimestamp'
+        - $ref: '#/components/parameters/XNonce'
+        - $ref: '#/components/parameters/XSignature'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WriteRequest' }
+      responses:
+        '200':
+          description: OK（业务校验失败亦为 200，携带非 0 code）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/BaseResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/WriteResult' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/FrequencyLimited'
+
+  /api/v1/open/tag-values/delete:
+    post:
+      tags: [write]
+      summary: 批量作废标签值
+      description: |
+        将标签值置为 `revoked`：以该对象+标签最近一条流水为基准追加 `revoked` 流水；结果 `results[].status`：`revoked` / `not_found`。
+                作废只写流水，画像变更由外部写入程序同步。
+        标签写入开关（`writable=false`）关闭时不可作废，整批拒绝（code 3012）。
+      parameters:
+        - $ref: '#/components/parameters/XAppKey'
+        - $ref: '#/components/parameters/XTimestamp'
+        - $ref: '#/components/parameters/XNonce'
+        - $ref: '#/components/parameters/XSignature'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DeleteRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/BaseResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/WriteResult' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/FrequencyLimited'
+
+  /api/v1/open/objects/{objectId}/profile:
+    get:
+      tags: [query]
+      summary: 对象画像
+      description: |
+        返回对象全部标签最新值（数据源 `tag_value_latest`，由外部写入程序维护）。已排除 `revoked` 与已过期值；
+        `include_pending=true` 时包含待审核值（不参与对外决策时建议保持 false）。
+      parameters:
+        - name: objectId
+          in: path
+          required: true
+          schema: { type: string }
+          description: 对象 ID（签名使用编码后的路径）
+        - name: object_type
+          in: query
+          required: true
+          schema: { type: string, example: driver }
+        - name: include_pending
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+        - $ref: '#/components/parameters/XAppKey'
+        - $ref: '#/components/parameters/XTimestamp'
+        - $ref: '#/components/parameters/XNonce'
+        - $ref: '#/components/parameters/XSignature'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/BaseResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ProfileView' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/open/objects/profile/combined:
+    get:
+      tags: [query]
+      summary: 司机+车辆组合标签内容
+      description: |
+        一次查询「司机 + 车辆」组合的标签当前值（数据齐全时覆盖清单-1015 的 32 个特征值：driver 17 / vehicle 15）。
+        `driver_id` / `vehicle_plate` 至少传一个，两段结果各自独立。
+        `include_empty=true`（默认）时无可取值的标签以 `status=none`、`tag_value=null` 占位返回
+        （占位范围 = 本租户可见在线标签中适用该对象类型的标签），便于渲染「待打标清单」；
+        可传 `include_empty=false` 仅取有值标签。`include_pending=true` 时包含待审核值。
+        `tag_codes` 可选：省略或为空时返回该对象类型下的全部可见在线标签（默认返回所有标签）；
+        传逗号分隔的标签码时仅返回这些标签（传清单-1015 的 32 个标签码即可精确取 32 个特征值）。
+      parameters:
+        - name: driver_id
+          in: query
+          required: false
+          schema: { type: string, example: DRV85001 }
+          description: 司机对象 ID
+        - name: vehicle_plate
+          in: query
+          required: false
+          schema: { type: string, example: 苏A88801 }
+          description: 车辆标识（车牌号；省份简称 + 字母 + 5~6 位字母/数字；普通 7 位如 苏A88801，新能源 8 位如 苏AD12345）
+        - name: include_pending
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+        - name: include_empty
+          in: query
+          required: false
+          schema: { type: boolean, default: true }
+        - name: tag_codes
+          in: query
+          required: false
+          schema: { type: string, example: 'social_tendency,monthly_driving_days,cargo_type' }
+          description: |
+            可选，逗号分隔的标签码；省略或为空时不按标签过滤，返回该对象类型下全部可见在线标签。
+            非空时仅返回这些标签（与 include_empty 组合时无值标签仍占位）。
+            传清单-1015 的 32 个标签码可精确返回 32 个特征值（driver 17 / vehicle 15）。
+        - $ref: '#/components/parameters/XAppKey'
+        - $ref: '#/components/parameters/XTimestamp'
+        - $ref: '#/components/parameters/XNonce'
+        - $ref: '#/components/parameters/XSignature'
+      responses:
+        '200':
+          description: OK（driver_id / vehicle_plate 均缺失时返回 code 2001）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/BaseResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/CombinedProfileView' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/open/operators/{operatorId}/tag-records:
+    get:
+      tags: [query]
+      summary: 操作员打标记录
+      description: 按操作员分页查询打标流水（含审核状态字段），支持对象/标签/时间过滤。
+      parameters:
+        - name: operatorId
+          in: path
+          required: true
+          schema: { type: string }
+          description: 操作员 ID（签名使用编码后的路径）
+        - name: object_type
+          in: query
+          required: false
+          schema: { type: string }
+        - name: object_id
+          in: query
+          required: false
+          schema: { type: string }
+        - name: tag_code
+          in: query
+          required: false
+          schema: { type: string }
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, example: '2026-10-01 00:00:00' }
+          description: 起始时间（yyyy-MM-dd HH:mm:ss，按 op_time）
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, example: '2026-10-31 23:59:59' }
+        - name: page
+          in: query
+          required: false
+          schema: { type: integer, default: 1 }
+        - name: size
+          in: query
+          required: false
+          schema: { type: integer, default: 20 }
+        - $ref: '#/components/parameters/XAppKey'
+        - $ref: '#/components/parameters/XTimestamp'
+        - $ref: '#/components/parameters/XNonce'
+        - $ref: '#/components/parameters/XSignature'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/BaseResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/OperatorRecordsView' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+components:
+
+  parameters:
+    XAppKey:
+      name: X-App-Key
+      in: header
+      required: true
+      schema: { type: string }
+    XTimestamp:
+      name: X-Timestamp
+      in: header
+      required: true
+      schema: { type: string }
+      description: 毫秒时间戳（±300 秒）
+    XNonce:
+      name: X-Nonce
+      in: header
+      required: true
+      schema: { type: string }
+      description: 一次性随机串（60 秒内不可重复）
+    XSignature:
+      name: X-Signature
+      in: header
+      required: true
+      schema: { type: string }
+      description: HMAC-SHA256 十六进制小写签名
+
+  responses:
+    Unauthorized:
+      description: 鉴权失败（1001~1008）
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/BaseResponse' }
+    FrequencyLimited:
+      description: 频控超限（3005 操作员 / 3006 对象标签 / 3007 IP）
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/BaseResponse' }
+
+  schemas:
+
+    BaseResponse:
+      type: object
+      required: [code, message, request_id]
+      properties:
+        code:
+          type: integer
+          description: |
+            0 成功；1xxx 鉴权（1003 签名失败 / 1004 时间戳超限 / 1005 Nonce 重放 /
+            1006 租户不匹配 / 1007 租户停用 / 1008 凭证停用）；
+            2xxx 参数（2001 缺参 / 2002 校验失败 / 2003 批量超限）；
+            3xxx 业务（3001 标签不存在 / 3002 未上线 / 3003 对象类型未注册 / 3004 处理中 /
+            3005~3007 频控 429 / 3008 remark 必填 / 3009 值不存在 / 3010 非待审核态 /
+            3011 标签不适用于该对象类型 / 3012 标签不允许写入（写入开关已关闭） /
+                        3013 标签值审核已停用）；
+            5xxx 系统（5001 内部错误 / 5002 存储失败）
+        message: { type: string }
+        request_id: { type: string }
+        data: { nullable: true, description: 业务数据（错误时为 null） }
+
+    TagView:
+      type: object
+      properties:
+        tag_code: { type: string }
+        tag_name: { type: string }
+        category_code: { type: string }
+        value_type: { type: string, enum: [boolean, enum, number, string, date] }
+        value_range:
+          type: string
+          nullable: true
+          description: 'JSON 文本，如 {"enum":["low","medium","high"]}'
+        value_multiple:
+          type: boolean
+          description: 仅 enum 生效；true = 多选，tag_value 用英文逗号分隔多个枚举值（如 公共道路,港口）
+        options:
+          type: array
+          items: { type: string }
+          description: enum 标签的允许值列表（非 enum 为空数组），供接入方渲染单选/多选控件
+        tag_type: { type: string, enum: [rule, fact, algo] }
+        object_type:
+          type: string
+          nullable: true
+          description: 适用对象类型，逗号分隔（如 driver,vehicle）；null = 不限对象
+        source_mode:
+          type: string
+          nullable: true
+          enum: [manual, statistics, hybrid, algo]
+          description: 打标来源：manual 客服手工 / statistics 数据统计 / hybrid 手工+统计 / algo 算法
+        need_value_audit: { type: boolean }
+        writable:
+          type: boolean
+          description: 写入开关：false = 禁止写入，POST 写入/作废该标签整批拒绝（code 3012）
+        value_ttl_days: { type: integer, description: 0 表示不过期 }
+        sensitivity: { type: string, enum: [L1, L2, L3, L4] }
+        status: { type: string, enum: [online, offline, reviewing, rejected] }
+        version: { type: integer }
+
+    Operator:
+      type: object
+      required: [operator_id, operator_type]
+      properties:
+        operator_id: { type: string }
+        operator_name: { type: string }
+        operator_type: { type: string, enum: [human, system, algo] }
+        operator_org: { type: string }
+
+    WriteRequest:
+      type: object
+      required: [biz_request_id, items]
+      properties:
+        biz_request_id: { type: string, maxLength: 96, description: 幂等键（接入方业务请求 ID，24h 去重） }
+        items:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          items: { $ref: '#/components/schemas/WriteItem' }
+
+    WriteItem:
+      type: object
+      required: [object_type, object_id, tag_code, tag_value, operator]
+      properties:
+        object_type: { type: string, example: driver }
+        object_id: { type: string, example: DRV00001 }
+        tag_code: { type: string, example: driving_risk_attitude }
+        tag_value: { type: string, maxLength: 2048, description: '按标签 value_type 传字符串。enum 单选传一个枚举值；多选（value_multiple=true）传英文逗号分隔的多个枚举值，如 公共道路,港口' }
+        biz_time: { type: string, nullable: true, example: '2026-10-14 10:00:00' }
+        operate_time: { type: string, nullable: true, description: 操作员操作时间 }
+        operator: { $ref: '#/components/schemas/Operator' }
+        source: { type: string, nullable: true, description: 来源标识（如客服工作台） }
+        confidence: { type: string, maxLength: 10, enum: ["高", "中", "低"], nullable: true, description: 置信度：高/中/低（算法标签使用） }
+        remark: { type: string, nullable: true, description: 敏感标签必填打标理由 }
+        evidence_url: { type: string, nullable: true }
+        ext_json: { type: string, nullable: true, description: 扩展字段（JSON 文本） }
+
+    DeleteRequest:
+      type: object
+      required: [biz_request_id, items]
+      properties:
+        biz_request_id: { type: string, description: 幂等键 }
+        items:
+          type: array
+          maxItems: 1000
+          items:
+            type: object
+            required: [object_type, object_id, tag_code]
+            properties:
+              object_type: { type: string }
+              object_id: { type: string }
+              tag_code: { type: string }
+              operator: { $ref: '#/components/schemas/Operator' }
+              remark: { type: string, nullable: true }
+
+    WriteResult:
+      type: object
+      properties:
+        biz_request_id: { type: string }
+        total: { type: integer }
+        accepted: { type: integer, description: 已受理（流水 effective，不代表画像已可查） }
+        pending_audit: { type: integer, description: 已受理的敏感标签（流水 pending_audit） }
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              index: { type: integer }
+              object_type: { type: string }
+              object_id: { type: string }
+              tag_code: { type: string }
+              status:
+                type: string
+                enum: [accepted, pending_audit, rejected, revoked, not_found]
+                description: 写入返回 accepted/pending_audit；作废返回 revoked/not_found；rejected 为预留状态（当前版本整批校验失败不产生）
+              message: { type: string, nullable: true, description: 敏感受理提示或拒绝原因（status=rejected 时） }
+
+    TagItem:
+      type: object
+      description: 画像标签元素（仅生效值；include_pending=true 时含 pending_audit；status=none 为无值占位）
+      properties:
+        tag_code: { type: string }
+        tag_name: { type: string }
+        tag_value: { type: string, nullable: true, description: null = 无当前值（status=none） }
+        value_type: { type: string }
+        status: { type: string, enum: [effective, pending_audit, none] }
+        source_mode: { type: string, nullable: true, enum: [manual, statistics, hybrid, algo], description: 标签打标来源类型（字典字段） }
+        need_value_audit: { type: boolean, description: true = 敏感标签，写入后进值审核 }
+        biz_time: { type: string, nullable: true }
+        operate_time: { type: string, nullable: true }
+        expire_time: { type: string, nullable: true }
+        operator_id: { type: string, nullable: true }
+        operator_name: { type: string, nullable: true }
+        operator_type: { type: string, nullable: true }
+        operator_org: { type: string, nullable: true }
+        source: { type: string, nullable: true }
+        confidence: { type: string, maxLength: 10, enum: ["高", "中", "低"], nullable: true, description: 置信度：高/中/低（算法标签使用） }
+        remark: { type: string, nullable: true }
+        evidence_url: { type: string, nullable: true }
+
+    ProfileView:
+      type: object
+      properties:
+        tenant_id: { type: string }
+        object_type: { type: string }
+        object_id: { type: string }
+        tags:
+          type: array
+          items: { $ref: '#/components/schemas/TagItem' }
+
+    CombinedProfileView:
+      type: object
+      properties:
+        tenant_id: { type: string }
+        driver:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/ProfileSection'
+          description: 未传 driver_id 时为 null
+        vehicle:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/ProfileSection'
+          description: 未传 vehicle_plate 时为 null
+        total: { type: integer, description: 两段标签总数 }
+
+    ProfileSection:
+      type: object
+      properties:
+        object_type: { type: string }
+        object_id: { type: string }
+        tags:
+          type: array
+          items: { $ref: '#/components/schemas/TagItem' }
+
+    TagValueFull:
+      type: object
+      description: 打标流水记录（含审核字段）
+      properties:
+        tenant_id: { type: string }
+        object_type: { type: string }
+        object_id: { type: string }
+        tag_code: { type: string }
+        tag_value: { type: string }
+        value_type: { type: string }
+        status: { type: string, enum: [effective, pending_audit, expired, revoked] }
+        biz_time: { type: string, nullable: true }
+        operate_time: { type: string, nullable: true }
+        expire_time: { type: string, nullable: true }
+        operator_id: { type: string, nullable: true }
+        operator_name: { type: string, nullable: true }
+        operator_type: { type: string, nullable: true }
+        operator_org: { type: string, nullable: true }
+        source: { type: string, nullable: true }
+        confidence: { type: string, maxLength: 10, enum: ["高", "中", "低"], nullable: true, description: 置信度：高/中/低（算法标签使用） }
+        remark: { type: string, nullable: true }
+        evidence_url: { type: string, nullable: true }
+        audit_by: { type: string, nullable: true }
+        audit_time: { type: string, nullable: true }
+        audit_remark: { type: string, nullable: true }
+        request_id: { type: string, description: 写入请求 request_id（全链路追踪） }
+        op_time: { type: string, description: 入库时间 }
+        ver: { type: integer, format: int64 }
+        ext_json: { type: string, nullable: true }
+
+    OperatorRecordsView:
+      type: object
+      properties:
+        operator_id: { type: string }
+        page: { type: integer }
+        size: { type: integer }
+        total: { type: integer, format: int64 }
+        records:
+          type: array
+          items: { $ref: '#/components/schemas/TagValueFull' }

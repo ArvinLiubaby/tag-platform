@@ -1,0 +1,32 @@
+# ============================================================================
+# 生产环境 systemd 单元模板（部署到 /etc/systemd/system/tag-platform.service）
+#
+# 裸机形态：OceanBase + StarRocks + 本机 Redis，应用 java -jar 直跑 8080。
+# 依赖 /etc/tag-platform/tag-platform.env（不入库，模板见 tag-platform.env.example）。
+# ============================================================================
+[Unit]
+Description=Tag Platform Server
+After=network-online.target redis-server.service
+Wants=network-online.target
+Requires=redis-server.service
+
+[Service]
+Type=simple
+User=tagplatform
+Group=tagplatform
+WorkingDirectory=/opt/tag-platform
+EnvironmentFile=/etc/tag-platform/tag-platform.env
+ExecStart=/usr/bin/java -Xms512m -Xmx2g -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/var/log/tag-platform -Duser.timezone=Asia/Shanghai -Dfile.encoding=UTF-8 -jar /opt/tag-platform/tag-platform-server.jar
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+KillSignal=SIGTERM
+LimitNOFILE=65535
+NoNewPrivileges=true
+PrivateTmp=true
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tag-platform
+
+[Install]
+WantedBy=multi-user.target
