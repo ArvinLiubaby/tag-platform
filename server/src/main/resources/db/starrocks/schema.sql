@@ -10,8 +10,9 @@
 CREATE TABLE IF NOT EXISTS tag_value_latest (
   tenant_id     VARCHAR(64)   NOT NULL COMMENT '租户标识',
   object_type   VARCHAR(32)   NOT NULL COMMENT '对象类型：driver/vehicle/fleet/alarm_event',
-  object_id     VARCHAR(128)  NOT NULL COMMENT '对象唯一标识（司机ID/车牌号/车队ID/事件ID）',
+  object_id     VARCHAR(128)  NOT NULL COMMENT '对象唯一标识（车辆=车辆唯一ID，如 VH10086；司机ID/车队ID/事件ID。车牌号放 object_name）',
   tag_code      VARCHAR(64)   NOT NULL COMMENT '标签编码',
+  object_name   VARCHAR(256)  NULL COMMENT '对象名称（车辆=车牌号；司机姓名/车队名等，可选，仅展示不参与主键）',
   tag_value     VARCHAR(2048) NULL COMMENT '标签值（统一按字符串存储）',
   value_type    VARCHAR(16)   NULL COMMENT '值类型：boolean/number/enum/string/date',
   status        VARCHAR(16)   NOT NULL COMMENT '值状态：effective-生效、pending_audit-待审核、revoked-已作废、expired-已过期',
@@ -47,9 +48,10 @@ PROPERTIES (
 CREATE TABLE IF NOT EXISTS tag_value_history (
   tenant_id     VARCHAR(64)   NOT NULL COMMENT '租户标识',
   object_type   VARCHAR(32)   NOT NULL COMMENT '对象类型：driver/vehicle/fleet/alarm_event',
-  object_id     VARCHAR(128)  NOT NULL COMMENT '对象唯一标识（司机ID/车牌号/车队ID/事件ID）',
+  object_id     VARCHAR(128)  NOT NULL COMMENT '对象唯一标识（车辆=车辆唯一ID，如 VH10086；司机ID/车队ID/事件ID。车牌号放 object_name）',
   tag_code      VARCHAR(64)   NOT NULL COMMENT '标签编码',
   op_time       DATETIME      NOT NULL COMMENT '记录写入时间（同对象+标签按此倒序取最新）',
+  object_name   VARCHAR(256)  NULL COMMENT '对象名称（车辆=车牌号；司机姓名/车队名等，可选，仅展示不参与主键）',
   tag_value     VARCHAR(2048) NULL COMMENT '标签值（统一按字符串存储）',
   value_type    VARCHAR(16)   NULL COMMENT '值类型：boolean/number/enum/string/date',
   status        VARCHAR(16)   NOT NULL COMMENT '值状态：effective-生效、pending_audit-待审核、revoked-已作废、expired-已过期',

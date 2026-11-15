@@ -8,7 +8,8 @@ const { TOKEN_KEY, USER_KEY, state, PAGE_TITLES, PAGE_SUBTITLES, STATUS_BADGE, R
    * ============================================================ */
   var wbState = {
     objectType: 'driver', objectId: '', item: null, task: null, taskTags: [],
-    profile: null, tags: [], items: [], formTags: [], values: {}, pending: false, submitBizId: null
+    profile: null, tags: [], items: [], formTags: [], values: {}, pending: false, submitBizId: null,
+    locks: [], lockMap: {}
   };
 
   function hashQuery() {
@@ -39,7 +40,7 @@ const { TOKEN_KEY, USER_KEY, state, PAGE_TITLES, PAGE_SUBTITLES, STATUS_BADGE, R
       '  <div class="filter-bar wb-filter">' +
       tenantFieldHtml('wb-tenant') +
       '    <div class="field"><span>对象类型</span><select id="wb-otype"><option value="driver">driver 司机</option><option value="vehicle">vehicle 车辆</option></select></div>' +
-      '    <div class="field grow"><span>对象 ID</span><input id="wb-oid" placeholder="DRV85001 / 苏A88801"></div>' +
+      '    <div class="field grow"><span>对象 ID</span><input id="wb-oid" placeholder="DRV85001 / VH10086（车辆 ID，兼容车牌）"></div>' +
       '    <button class="btn btn-primary" id="wb-search">查画像</button>' +
       '  </div>' +
       '</div>' +
@@ -97,10 +98,10 @@ const { TOKEN_KEY, USER_KEY, state, PAGE_TITLES, PAGE_SUBTITLES, STATUS_BADGE, R
         wbState.objectType = types[0].object_type;
       }
       sel.value = wbState.objectType;
-      $('#wb-oid').placeholder = wbState.objectType === 'vehicle' ? '苏A88801' : 'DRV85001';
+      $('#wb-oid').placeholder = wbState.objectType === 'vehicle' ? 'VH10086' : 'DRV85001';
       sel.addEventListener('change', function () {
         wbState.objectType = this.value;
-        $('#wb-oid').placeholder = this.value === 'vehicle' ? '苏A88801' : 'DRV85001';
+        $('#wb-oid').placeholder = this.value === 'vehicle' ? 'VH10086' : 'DRV85001';
         loadWbTags();
         loadWbRecent();
       });
@@ -172,8 +173,11 @@ const { TOKEN_KEY, USER_KEY, state, PAGE_TITLES, PAGE_SUBTITLES, STATUS_BADGE, R
         rows = rows || [];
         if (!rows.length) { host.innerHTML = '<div class="wb-empty-line">暂无对象记录</div>'; return; }
         host.innerHTML = rows.map(function (r) {
-          return '<button type="button" class="wb-recent-item" data-wb-oid="' + esc(r.object_id) + '">' +
-            '<span class="mono">' + esc(r.object_id) + '</span><small>' + fmtDt(r.last_seen) + '</small></button>';
+          var dt = fmtDt(r.last_seen);
+          return '<button type="button" class="wb-recent-item" data-wb-oid="' + esc(r.object_id) + '"' +
+            ' title="' + esc(r.object_id + ' · ' + dt) + '">' +
+            '<span class="mono wb-recent-id">' + esc(r.object_id) + '</span>' +
+            '<small class="wb-recent-time">' + dt + '</small></button>';
         }).join('');
         host.querySelectorAll('[data-wb-oid]').forEach(function (btn) {
           btn.addEventListener('click', function () {
@@ -213,17 +217,33 @@ const { TOKEN_KEY, USER_KEY, state, PAGE_TITLES, PAGE_SUBTITLES, STATUS_BADGE, R
     }).catch(function (e) { toast(e.message, 'err'); });
   }
 
+  function wbLocked(code) {
+    return !wbState.item && !!wbState.lockMap[code];
+  }
+
+  function loadWbLocks() {
+    wbState.locks = []; wbState.lockMap = {};
+    if (!wbState.objectId) return Promise.resolve();
+    return api('/workbench/verified-locks?objectType=' + encodeURIComponent(wbState.objectType) +
+      '&objectId=' + encodeURIComponent(wbState.objectId)).then(function (codes) {
+        wbState.locks = codes || [];
+        (codes || []).forEach(function (c) { wbState.lockMap[c] = true; });
+      }).catch(function () { wbState.locks = []; wbState.lockMap = {}; });
+  }
+
   function loadWbProfile() {
     if (!wbState.objectId) return;
-    api('/workbench/objects/profile?objectType=' + encodeURIComponent(wbState.objectType) +
-      '&objectId=' + encodeURIComponent(wbState.objectId)).then(function (p) {
-      wbState.profile = p;
-      renderWbProfile();
-      renderWbForm();
-    }).catch(function (e) {
-      wbState.profile = null;
-      $('#wb-profile').innerHTML = emptyState('画像加载失败', e.message);
-      $('#wb-form-body').innerHTML = emptyState('无法打标', '请先修正对象 ID 或对象类型');
+    loadWbLocks().then(function () {
+      api('/workbench/objects/profile?objectType=' + encodeURIComponent(wbState.objectType) +
+        '&objectId=' + encodeURIComponent(wbState.objectId)).then(function (p) {
+        wbState.profile = p;
+        renderWbProfile();
+        renderWbForm();
+      }).catch(function (e) {
+        wbState.profile = null;
+        $('#wb-profile').innerHTML = emptyState('画像加载失败', e.message);
+        $('#wb-form-body').innerHTML = emptyState('无法打标', '请先修正对象 ID 或对象类型');
+      });
     });
   }
 
@@ -271,8 +291,11 @@ const { TOKEN_KEY, USER_KEY, state, PAGE_TITLES, PAGE_SUBTITLES, STATUS_BADGE, R
         : (t.value_multiple
           ? String(value).split(',').map(function (v) { return '<span class="tag-value-chip">' + esc(v.trim()) + '</span>'; }).join('')
           : esc(value));
-      return '<button type="button" class="wb-tag-card' + (t.status === 'pending_audit' ? ' pending' : '') + '" data-wb-tag="' + esc(t.tag_code) + '">' +
-        '<span class="wb-tag-head"><b>' + esc(t.tag_name || t.tag_code) + '</b>' + badge(t.status) + '</span>' +
+      var locked = wbLocked(t.tag_code);
+      return '<button type="button" class="wb-tag-card' + (t.status === 'pending_audit' ? ' pending' : '') +
+        (locked ? ' locked' : '') + '" data-wb-tag="' + esc(t.tag_code) + '">' +
+        '<span class="wb-tag-head"><b>' + esc(t.tag_name || t.tag_code) + '</b>' + badge(t.status) +
+        (locked ? '<span class="badge badge-purple">已验收</span>' : '') + '</span>' +
         '<span class="wb-tag-code mono">' + esc(t.tag_code) + (t.value_multiple ? ' · 多选' : '') + '</span>' +
         '<span class="wb-tag-value">' + valueHtml + '</span>' +
         '<span class="wb-tag-sub">' + dash(t.operator_name) + ' · ' + fmtDt(t.operate_time) + '</span>' +
@@ -361,7 +384,20 @@ const { TOKEN_KEY, USER_KEY, state, PAGE_TITLES, PAGE_SUBTITLES, STATUS_BADGE, R
     return null;
   }
 
+  /** 临时打标（不依赖任务）仅管理类角色可用 */
+  function canAdhoc() {
+    return canByPermission('op.workbench.adhoc', ['ADMIN', 'TENANT_ADMIN', 'TASK_MANAGER']);
+  }
+
   function wbAddTag(code) {
+    if (!wbState.item && !canAdhoc()) {
+      toast('临时打标仅管理员可用，请从「我的待办」进入任务打标', 'err');
+      return;
+    }
+    if (wbLocked(code)) {
+      toast('该标签所属任务已验收，禁止临时修改；如需变更请新建任务', 'err');
+      return;
+    }
     if (wbState.formTags.indexOf(code) >= 0) {
       var el = document.querySelector('[data-wb-tag-form="' + code + '"]');
       if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -445,11 +481,25 @@ const { TOKEN_KEY, USER_KEY, state, PAGE_TITLES, PAGE_SUBTITLES, STATUS_BADGE, R
       actions.innerHTML = '<span class="wb-tenant-chip">无任务 · 临时打标</span>';
     }
 
+    if (!wbState.item && !canAdhoc()) {
+      actions.innerHTML = '<span class="wb-tenant-chip">仅管理员可用</span>';
+      host.innerHTML = emptyState('临时打标仅管理员可用',
+        '打标员请从「我的待办」进入任务打标；如需补录或纠错，请联系任务管理员');
+      return;
+    }
+
     var editable = wbFormEditable();
     var metaHtml = '';
+    if (!wbState.item && wbState.locks.length) {
+      metaHtml = '<div class="wb-task-banner">' +
+        '<div><b>已验收锁定</b><span class="mono">' + wbState.locks.length + ' 个标签</span></div>' +
+        '<div class="wb-task-banner-sub">已验收任务覆盖的标签禁止临时打标；如需变更请新建任务</div></div>';
+    }
     var addPicker = '';
     if (!wbState.item && editable) {
-      var available = wbState.tags.filter(function (t) { return wbState.formTags.indexOf(t.tag_code) < 0; });
+      var available = wbState.tags.filter(function (t) {
+        return wbState.formTags.indexOf(t.tag_code) < 0 && !wbLocked(t.tag_code);
+      });
       addPicker = '<div class="wb-add-tag">' +
         '<select class="wb-input" id="wb-add-tag-select"><option value="">选择要打的标签…</option>' +
         available.map(function (t) {

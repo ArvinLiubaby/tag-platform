@@ -59,6 +59,8 @@ public final class RolePermissionCatalog {
                     item("page.market", "标签市场", "浏览市场标签；租户管理员可上架与申请",
                             "ADMIN", "TENANT_ADMIN", "TASK_MANAGER", "TAGGER", "AUDITOR", "VIEWER"),
                     item("page.docs", "接口文档", "开放 API 接入说明",
+                            "ADMIN", "TENANT_ADMIN", "TASK_MANAGER", "TAGGER", "AUDITOR", "VIEWER"),
+                    item("page.monitor", "接入监控", "Kafka 等写入通道的运行状态、未消费积压与死信",
                             "ADMIN", "TENANT_ADMIN", "TASK_MANAGER", "TAGGER", "AUDITOR", "VIEWER")
             ))
     );
@@ -67,10 +69,14 @@ public final class RolePermissionCatalog {
             new PermissionGroup("operation", "业务操作", "写入、任务、用户与治理操作；实际接口仍做租户范围校验", List.of(
                     item("op.workbench.submit", "工作台打标提交", "提交标签值；敏感标签进入审核，普通标签直写",
                             "ADMIN", "TENANT_ADMIN", "TASK_MANAGER", "TAGGER"),
+                    item("op.workbench.adhoc", "临时打标（不走任务）", "不依赖任务的临时补标/纠错；打标员只能通过任务打标",
+                            "ADMIN", "TENANT_ADMIN", "TASK_MANAGER"),
                     item("op.task.manage", "任务创建 / 发布 / 派发 / 取消", "管理任务全生命周期",
                             "ADMIN", "TENANT_ADMIN", "TASK_MANAGER"),
                     item("op.task.review", "任务项审核", "任务项通过、驳回与返工",
                             "ADMIN", "TENANT_ADMIN", "TASK_MANAGER", "AUDITOR"),
+                    item("op.task.accept", "任务验收", "已完成任务验收后，其对象标签禁止临时打标",
+                            "ADMIN", "TENANT_ADMIN"),
                     item("op.user.manage", "用户账号管理", "平台管理员管理全部账号；租户管理员仅本租户操作类角色",
                             "ADMIN", "TENANT_ADMIN"),
                     item("op.market.list", "标签上架市场", "租户管理员上架本租户可见的在线标签",
@@ -82,6 +88,8 @@ public final class RolePermissionCatalog {
                     item("op.market.requests", "查看市场申请", "平台管理员查看全部；租户管理员查看本租户申请",
                             "ADMIN", "TENANT_ADMIN"),
                     item("op.tag.manage", "标签定义维护", "平台管理员管理全部；租户管理员仅限归属本租户（tenant_id 第一个租户）",
+                            "ADMIN", "TENANT_ADMIN"),
+                    item("op.latest.sync", "latest 手动同步", "把打标流水折叠为最新值写入 latest 宽表；仅手工触发，平台不做定时同步",
                             "ADMIN", "TENANT_ADMIN"),
                     item("op.tag.audit", "标签定义审核", "标签注册/变更审核决策",
                             "ADMIN"),
@@ -119,6 +127,7 @@ public final class RolePermissionCatalog {
         MENU_PERMISSIONS.put("users", "page.users");
         MENU_PERMISSIONS.put("logs", "page.logs");
         MENU_PERMISSIONS.put("docs", "page.docs");
+        MENU_PERMISSIONS.put("monitor", "page.monitor");
     }
 
     public static Catalog catalog() {

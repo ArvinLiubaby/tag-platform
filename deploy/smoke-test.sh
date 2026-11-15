@@ -147,12 +147,14 @@ assert_eq "$(jget "$WRITE_RESP" data.pending_audit)" "0" "待审核 0 条" "$WRI
 
 # ---------- 4. 画像查询（平台不再写 latest，外部程序同步前无数据） ----------
 step "4/11 画像查询（latest 未同步）"
-PROFILE1=$(open_api GET /api/v1/open/objects/${DRIVER_ID}/profile "include_pending=false&object_type=driver" "")
-assert_code0 "$PROFILE1" "GET profile 验签通过"
-assert_eq "$(jlen "$PROFILE1" data.tags)" "0" "写入后默认画像 0 条（平台不写 latest）" "$PROFILE1"
+PROFILE_QUERY="include_pending=false&object_id=${DRIVER_ID}&object_type=driver"
+PROFILE1=$(open_api GET /api/v1/open/objects/profiles "$PROFILE_QUERY" "")
+assert_code0 "$PROFILE1" "GET /objects/profiles 验签通过"
+assert_eq "$(jget "$PROFILE1" data.total)" "1" "批量画像返回 1 个对象" "$PROFILE1"
+assert_eq "$(jlen "$PROFILE1" data.records.0.tags)" "0" "写入后默认画像 0 条（平台不写 latest）" "$PROFILE1"
 
-PROFILE2=$(open_api GET /api/v1/open/objects/${DRIVER_ID}/profile "include_pending=true&object_type=driver" "")
-assert_eq "$(jlen "$PROFILE2" data.tags)" "0" "include_pending=true 同样 0 条（latest 未同步）" "$PROFILE2"
+PROFILE2=$(open_api GET /api/v1/open/objects/profiles "include_pending=true&object_id=${DRIVER_ID}&object_type=driver" "")
+assert_eq "$(jlen "$PROFILE2" data.records.0.tags)" "0" "include_pending=true 同样 0 条（latest 未同步）" "$PROFILE2"
 
 # ---------- 5. 待审核队列（只读）+ 审核接口已停用 ----------
 step "5/11 审核已停用（只读队列）"
@@ -170,8 +172,8 @@ assert_eq "$(jget "$REJECT_RESP" code)" "3013" "审核已停用：reject 返回 
 
 # ---------- 6. 操作员打标记录 ----------
 step "6/11 操作员打标记录"
-RECORDS_RESP=$(open_api GET /api/v1/open/operators/OP1001/tag-records "object_id=${DRIVER_ID}&page=1&size=20" "")
-assert_code0 "$RECORDS_RESP" "GET /api/v1/open/operators/OP1001/tag-records"
+RECORDS_RESP=$(open_api GET /api/v1/open/tag-records "object_id=${DRIVER_ID}&operator_id=OP1001&page=1&size=20" "")
+assert_code0 "$RECORDS_RESP" "GET /api/v1/open/tag-records（query 式）"
 # 历史流水：2 条写入（审核已停用，无审核状态变更流水）
 assert_eq "$(jget "$RECORDS_RESP" data.total)" "2" "打标流水 2 条" "$RECORDS_RESP"
 
@@ -206,11 +208,11 @@ assert_code0 "$DELETE_RESP" "POST /api/v1/open/tag-values/delete 受理成功"
 assert_eq "$(jget "$DELETE_RESP" data.results.0.status)" "revoked" "作废流水已记录（revoked）" "$DELETE_RESP"
 
 # 作废只追加流水：latest 仍由外部程序维护，画像保持 0 条
-PROFILE4=$(open_api GET /api/v1/open/objects/${DRIVER_ID}/profile "include_pending=false&object_type=driver" "")
-assert_eq "$(jlen "$PROFILE4" data.tags)" "0" "作废后画像仍 0 条（latest 未同步）" "$PROFILE4"
+PROFILE4=$(open_api GET /api/v1/open/objects/profiles "$PROFILE_QUERY" "")
+assert_eq "$(jlen "$PROFILE4" data.records.0.tags)" "0" "作废后画像仍 0 条（latest 未同步）" "$PROFILE4"
 
 RECORDS2=$(open_api GET /api/v1/open/operators/OP1001/tag-records "object_id=${DRIVER_ID}&page=1&size=20" "")
-assert_eq "$(jget "$RECORDS2" data.total)" "3" "流水累计 3 条（2 写入 + 1 作废）" "$RECORDS2"
+assert_eq "$(jget "$RECORDS2" data.total)" "3" "旧路径式兼容：流水累计 3 条（2 写入 + 1 作废）" "$RECORDS2"
 
 # ---------- 10. 反例：错误签名 ----------
 step "10/11 反例：篡改签名"

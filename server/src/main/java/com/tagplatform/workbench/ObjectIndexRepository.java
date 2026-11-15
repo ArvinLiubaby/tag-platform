@@ -1,5 +1,6 @@
 package com.tagplatform.workbench;
 
+import com.tagplatform.common.ObjectIndexHook;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
@@ -8,10 +9,11 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 /**
- * 对象索引：工作台搜索与任务导入时登记对象首次/最近出现时间。
+ * 对象索引：工作台搜索与任务导入时登记对象首次/最近出现时间；
+ * 同时作为开放写入的 ObjectIndexHook 实现，登记对象并维护对象名称（下拉/画像展示用）。
  */
 @Repository
-public class ObjectIndexRepository {
+public class ObjectIndexRepository implements ObjectIndexHook {
 
     private final JdbcTemplate jdbcTemplate;
 
@@ -20,22 +22,34 @@ public class ObjectIndexRepository {
     }
 
     public void touch(String tenantId, String objectType, String objectId) {
+        touch(tenantId, objectType, objectId, null);
+    }
+
+    /** 登记/刷新对象索引；objectName 非空时更新名称，空时保留已有值 */
+    @Override
+    public void touch(String tenantId, String objectType, String objectId, String objectName) {
         LocalDateTime now = LocalDateTime.now();
-        int updated = jdbcTemplate.update(
-                "UPDATE object_index SET last_seen = ? WHERE tenant_id = ? AND object_type = ? AND object_id = ?",
-                now, tenantId, objectType, objectId);
+        boolean hasName = objectName != null && !objectName.isBlank();
+        String updateSql = hasName
+                ? "UPDATE object_index SET last_seen = ?, object_name = ? WHERE tenant_id = ? AND object_type = ? AND object_id = ?"
+                : "UPDATE object_index SET last_seen = ? WHERE tenant_id = ? AND object_type = ? AND object_id = ?";
+        int updated = hasName
+                ? jdbcTemplate.update(updateSql, now, objectName.trim(), tenantId, objectType, objectId)
+                : jdbcTemplate.update(updateSql, now, tenantId, objectType, objectId);
         if (updated > 0) {
             return;
         }
         try {
             jdbcTemplate.update("""
-                    INSERT INTO object_index (tenant_id, object_type, object_id, first_seen, last_seen)
-                    VALUES (?, ?, ?, ?, ?)
-                    """, tenantId, objectType, objectId, now, now);
+                    INSERT INTO object_index (tenant_id, object_type, object_id, object_name, first_seen, last_seen)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """, tenantId, objectType, objectId, hasName ? objectName.trim() : null, now, now);
         } catch (DuplicateKeyException e) {
-            jdbcTemplate.update(
-                    "UPDATE object_index SET last_seen = ? WHERE tenant_id = ? AND object_type = ? AND object_id = ?",
-                    now, tenantId, objectType, objectId);
+            if (hasName) {
+                jdbcTemplate.update(updateSql, now, objectName.trim(), tenantId, objectType, objectId);
+            } else {
+                jdbcTemplate.update(updateSql, now, tenantId, objectType, objectId);
+            }
         }
     }
 

@@ -75,6 +75,178 @@ public class TagMetaService {
         return tagMetaRepository.listCategories();
     }
 
+    // ------------------------------------------------------ 维度管理（tag_category）
+
+    private static final Pattern CATEGORY_CODE_PATTERN = Pattern.compile("^[a-z][a-z0-9_]{1,63}$");
+
+    /** 维度新增请求：parentCode 为空 = 一级维度；sortNo 为空 = 同级最大排序号 +10 */
+    public record CategoryCreateRequest(String categoryCode, String categoryName, String parentCode, Integer sortNo) {
+    }
+
+    /**
+     * 维度编辑请求：categoryName / sortNo 为 null 表示不修改；parentChanged=true 时才处理父级变更
+     * （此时 parentCode 为目标父级，传 null = 升级为一级维度），避免「改名/排序」请求误触发父级升级。
+     */
+    public record CategoryUpdateRequest(String categoryName, String parentCode, Boolean parentChanged,
+                                        Integer sortNo) {
+
+        /** 兼容简写：不调整父级，仅改名/排序 */
+        public CategoryUpdateRequest(String categoryName, Integer sortNo) {
+            this(categoryName, null, false, sortNo);
+        }
+    }
+
+    /** 新增维度：二级维度必须挂在一维维度下 */
+    @Transactional
+    public TagMetaRepository.CategoryInfo createCategory(CategoryCreateRequest request) {
+        String code = normalize(request.categoryCode());
+        String name = normalize(request.categoryName());
+        String parent = normalize(request.parentCode());
+        if (code == null || !CATEGORY_CODE_PATTERN.matcher(code).matches()) {
+            throw new BizException(ErrorCode.PARAM_INVALID,
+                    "category_code 需为小写字母开头、2~64 位小写字母/数字/下划线");
+        }
+        if (name == null || name.length() > 128) {
+            throw new BizException(ErrorCode.PARAM_INVALID, "category_name 必填且 ≤128 字符");
+        }
+        if (tagMetaRepository.findCategory(code).isPresent()) {
+            throw new BizException(ErrorCode.PARAM_INVALID, "category_code 已存在: " + code);
+        }
+        int sortNo = request.sortNo() != null ? request.sortNo()
+                : tagMetaRepository.maxSortNoAmongSiblings(parent) + 10;
+        if (parent != null) {
+            requireTopCategory(parent, "父级维度");
+        }
+        tagMetaRepository.insertCategory(code, name, parent, sortNo);
+        return tagMetaRepository.findCategory(code).orElseThrow();
+    }
+
+    /**
+     * 编辑维度：改名/排序任意；parentCode 变更时校验——有下级维度的节点不可改父级（避免出现三级）、
+     * 一级维度不可降级为二级、目标父级必须是一级维度。
+     */
+    @Transactional
+    public TagMetaRepository.CategoryInfo updateCategory(String code, CategoryUpdateRequest request) {
+        TagMetaRepository.CategoryInfo current = requireCategory(code);
+        String name = normalize(request.categoryName());
+        if (name != null && name.length() > 128) {
+            throw new BizException(ErrorCode.PARAM_INVALID, "category_name ≤128 字符");
+        }
+        if (name != null && !name.equals(current.categoryName())) {
+            tagMetaRepository.updateCategoryName(code, name);
+        }
+        if (request.sortNo() != null) {
+            tagMetaRepository.updateCategorySortNo(code, request.sortNo());
+        }
+        String curParent = normalize(current.parentCode());
+        if (Boolean.TRUE.equals(request.parentChanged())) {
+            String newParent = normalize(request.parentCode());
+            if (java.util.Objects.equals(curParent, newParent)) {
+                return tagMetaRepository.findCategory(code).orElseThrow();
+            }
+            if (tagMetaRepository.countSubCategories(code) > 0) {
+                throw new BizException(ErrorCode.PARAM_INVALID,
+                        "维度「" + current.categoryName() + "」存在下级维度，不能调整父级");
+            }
+            if (curParent == null && newParent != null) {
+                throw new BizException(ErrorCode.PARAM_INVALID, "一级维度不能调整为二级维度");
+            }
+            if (newParent != null) {
+                requireTopCategory(newParent, "目标父级维度");
+            }
+            tagMetaRepository.updateCategoryParent(code, newParent);
+        }
+        return tagMetaRepository.findCategory(code).orElseThrow();
+    }
+
+    /** 删除维度：存在下级维度或被标签引用（category/dim1/dim2 任一）时禁止 */
+    @Transactional
+    public void deleteCategory(String code) {
+        TagMetaRepository.CategoryInfo current = requireCategory(code);
+        long subs = tagMetaRepository.countSubCategories(code);
+        if (subs > 0) {
+            throw new BizException(ErrorCode.PARAM_INVALID,
+                    "维度「" + current.categoryName() + "」存在 " + subs + " 个下级维度，请先删除或移走下级维度");
+        }
+        long refs = tagMetaRepository.countTagRefs(code);
+        if (refs > 0) {
+            throw new BizException(ErrorCode.PARAM_INVALID,
+                    "维度「" + current.categoryName() + "」被 " + refs + " 个标签引用，请先调整这些标签的维度");
+        }
+        tagMetaRepository.deleteCategory(code);
+    }
+
+    // ------------------------------------------------------ 批量保存（控制台「保存变更」）
+
+    /** 批量更新项：categoryCode 定位；name / sortNo 为 null 表示不修改；parentChanged=true 时才处理父级变更 */
+    public record CategoryBatchUpdate(String categoryCode, String categoryName, Integer sortNo,
+                                      String parentCode, Boolean parentChanged) {
+    }
+
+    /** 批量保存请求：删除 → 新增（一级优先）→ 更新，单事务执行，任一失败整体回滚 */
+    public record CategoryBatchRequest(List<CategoryCreateRequest> creates,
+                                       List<CategoryBatchUpdate> updates,
+                                       List<String> deletes) {
+    }
+
+    /**
+     * 批量保存维度变更：控制台维度管理「保存变更」的落库入口。
+     * 顺序：先删（二级先于一级，避免「存在下级维度」误拒）→ 再新增（一级先于二级，支持同批新增父子）→ 最后更新。
+     */
+    @Transactional
+    public void applyCategoryChanges(CategoryBatchRequest request) {
+        List<String> deletes = request.deletes() == null ? List.of()
+                : request.deletes().stream().filter(Objects::nonNull)
+                .map(String::trim).filter(s -> !s.isEmpty()).distinct().toList();
+        List<String> subDeletes = new ArrayList<>();
+        List<String> topDeletes = new ArrayList<>();
+        for (String code : deletes) {
+            TagMetaRepository.CategoryInfo info = tagMetaRepository.findCategory(code)
+                    .orElseThrow(() -> new BizException(ErrorCode.PARAM_INVALID,
+                            "待删除的维度不存在，请刷新后重试: " + code));
+            if (normalize(info.parentCode()) == null) {
+                topDeletes.add(code);
+            } else {
+                subDeletes.add(code);
+            }
+        }
+        subDeletes.forEach(this::deleteCategory);
+        topDeletes.forEach(this::deleteCategory);
+
+        List<CategoryCreateRequest> creates = request.creates() == null ? List.of() : request.creates();
+        creates.stream().filter(c -> normalize(c.parentCode()) == null).forEach(this::createCategory);
+        creates.stream().filter(c -> normalize(c.parentCode()) != null).forEach(this::createCategory);
+
+        if (request.updates() != null) {
+            for (CategoryBatchUpdate update : request.updates()) {
+                String code = normalize(update.categoryCode());
+                if (code == null) {
+                    throw new BizException(ErrorCode.PARAM_INVALID, "待更新的维度编码不能为空");
+                }
+                updateCategory(code, new CategoryUpdateRequest(update.categoryName(),
+                        update.parentCode(), update.parentChanged(), update.sortNo()));
+            }
+        }
+    }
+
+    // ------------------------------------------------------ 批量保存结束
+
+    private TagMetaRepository.CategoryInfo requireCategory(String code) {
+        return tagMetaRepository.findCategory(normalize(code))
+                .orElseThrow(() -> new BizException(ErrorCode.PARAM_INVALID, "维度不存在: " + code));
+    }
+
+    /** 校验维度存在且必须是一级维度（parent_code 为空） */
+    private TagMetaRepository.CategoryInfo requireTopCategory(String code, String label) {
+        TagMetaRepository.CategoryInfo info = requireCategory(code);
+        if (normalize(info.parentCode()) != null) {
+            throw new BizException(ErrorCode.PARAM_INVALID, label + "「" + info.categoryName() + "」不是一级维度");
+        }
+        return info;
+    }
+
+    // ------------------------------------------------------ 维度管理结束
+
     public List<TagAuditRepository.TagAuditInfo> listAudits(String status) {
         return tagAuditRepository.list(status);
     }
@@ -105,7 +277,20 @@ public class TagMetaService {
             throw new BizException(ErrorCode.PARAM_INVALID, "标签编码已存在: " + req.tagCode());
         }
         LocalDateTime now = LocalDateTime.now();
-        TagMeta meta = new TagMeta(null, req.tagCode(), req.tagName(), req.categoryCode(), req.valueType(),
+        // 未显式指定一级维度时，按二级维度在类目树中的父节点推导
+        String dim2Code = req.dim2Code() == null ? req.categoryCode() : req.dim2Code();
+        String dim1Code = req.dim1Code();
+        if (dim1Code == null && dim2Code != null) {
+            dim1Code = tagMetaRepository.listCategories().stream()
+                    .filter(c -> dim2Code.equals(c.categoryCode()))
+                    .map(TagMetaRepository.CategoryInfo::parentCode)
+                    .filter(p -> p != null && !p.isBlank())
+                    .findFirst().orElse(null);
+        }
+        TagMeta meta = new TagMeta(null, req.tagCode(), req.tagName(), req.categoryCode(),
+                dim1Code, dim2Code, req.priority(),
+                req.valueType(),
+                normalizeUnit(req.unit()),
                 canonicalRange, multiple, req.tagType(), req.needValueAudit(), req.valueTtlDays(),
                 canonicalTenant, req.sensitivity(), "reviewing", 1, normalizeBinding(req.objectType()),
                 normalize(req.sourceMode()), req.writable() == null || req.writable(), now, now);
@@ -127,6 +312,7 @@ public class TagMetaService {
         if ("derived".equalsIgnoreCase(meta.tagType())) {
             throw new BizException(ErrorCode.PARAM_INVALID, "组合标签的定义与规则请在「标签组合」页维护");
         }
+        ensureNotDeleted(meta);
         if ("archived".equals(meta.status())) {
             throw new BizException(ErrorCode.PARAM_INVALID, "标签已归档，请先恢复后再修改");
         }
@@ -139,6 +325,8 @@ public class TagMetaService {
 
         String tagName = normalize(req.tagName());
         String valueType = normalize(req.valueType());
+        // 单位：不传保留原值；传空串表示清空
+        String unit = req.unit() == null ? meta.unit() : normalizeUnit(req.unit());
         String tagType = normalize(req.tagType());
         String sensitivity = normalize(req.sensitivity());
         String sourceMode = normalize(req.sourceMode());
@@ -161,9 +349,27 @@ public class TagMetaService {
         String canonicalRange = validateDefinition(meta.tagCode(), tagName, valueType, tagType, sensitivity,
                 tenantId, valueTtlDays, sourceMode, objectType, req.valueRange(), valueMultiple);
 
+        // 维度：显式传值则覆盖；只改 categoryCode 时二级维度跟随；均未传则保留原值
+        String categoryCode = normalize(req.categoryCode());
+        String dim1Code = req.dim1Code() == null ? meta.dim1Code() : normalize(req.dim1Code());
+        String dim2Code;
+        if (req.dim2Code() != null) {
+            dim2Code = normalize(req.dim2Code());
+        } else if (req.categoryCode() != null) {
+            dim2Code = categoryCode;
+        } else {
+            dim2Code = meta.dim2Code();
+        }
+        // 优先级：null 保留原值，-1 表示清空
+        Integer priority = meta.priority();
+        if (req.priority() != null) {
+            priority = req.priority() < 0 ? null : req.priority();
+        }
+
         int updated = tagMetaRepository.updateDefinition(meta.tagCode(), tagName,
-                normalize(req.categoryCode()), tenantId, valueType, canonicalRange, valueMultiple, tagType,
-                needValueAudit, valueTtlDays, sensitivity, objectType, sourceMode, writable, meta.version());
+                categoryCode, dim1Code, dim2Code, priority, tenantId, valueType, unit, canonicalRange,
+                valueMultiple, tagType, needValueAudit, valueTtlDays, sensitivity, objectType, sourceMode,
+                writable, meta.version());
         if (updated == 0) {
             throw new BizException(ErrorCode.PARAM_INVALID, "标签已被其他人修改，请刷新后重试");
         }
@@ -199,6 +405,7 @@ public class TagMetaService {
         TagMeta meta = tagMetaRepository.findByCode(tagCode)
                 .orElseThrow(() -> new BizException(ErrorCode.TAG_NOT_FOUND, "标签不存在: " + tagCode));
         ensureCanEdit(meta);
+        ensureNotDeleted(meta);
         if ("archived".equals(meta.status())) {
             throw new BizException(ErrorCode.PARAM_INVALID, "标签已归档，请先恢复后再操作");
         }
@@ -241,6 +448,32 @@ public class TagMetaService {
         }
     }
 
+    /**
+     * 彻底删除已归档标签：仅 archived 可删。控制台全路径不再展示；
+     * tag_meta 行与打标值/流水/审核历史全部保留（底层数据库可查），tag_code 不可复用。
+     * 删除为终态，控制台不可恢复。
+     */
+    @Transactional
+    public void deleteArchived(String tagCode) {
+        TagMeta meta = tagMetaRepository.findByCode(tagCode)
+                .orElseThrow(() -> new BizException(ErrorCode.TAG_NOT_FOUND, "标签不存在: " + tagCode));
+        ensureCanEdit(meta);
+        if (!"archived".equals(meta.status())) {
+            throw new BizException(ErrorCode.PARAM_INVALID,
+                    "仅已归档标签可以彻底删除，当前状态: " + meta.status());
+        }
+        if (tagMetaRepository.updateStatusIfCurrent(tagCode, "archived", "deleted") == 0) {
+            throw new BizException(ErrorCode.PARAM_INVALID, "标签状态已变化，请刷新后重试");
+        }
+    }
+
+    /** 已彻底删除的标签为终态，拒绝一切控制台写操作（数据仍可在底层库查询） */
+    private void ensureNotDeleted(TagMeta meta) {
+        if ("deleted".equals(meta.status())) {
+            throw new BizException(ErrorCode.PARAM_INVALID, "标签已彻底删除，不可再操作");
+        }
+    }
+
     /** 写入开关切换：false 后开放 API 推送/作废该标签值将整批拒绝（code=3012） */
     @Transactional
     public void changeWritable(String tagCode, boolean writable) {
@@ -250,6 +483,7 @@ public class TagMetaService {
         if ("derived".equalsIgnoreCase(meta.tagType())) {
             throw new BizException(ErrorCode.PARAM_INVALID, "组合标签由查询期计算，不支持写入开关");
         }
+        ensureNotDeleted(meta);
         if ("archived".equals(meta.status())) {
             throw new BizException(ErrorCode.PARAM_INVALID, "标签已归档，不能修改写入开关");
         }
@@ -290,6 +524,7 @@ public class TagMetaService {
     public TagMeta rollback(String tagCode, int targetVersion) {
         TagMeta current = findOrThrow(tagCode);
         ensureCanEdit(current);
+        ensureNotDeleted(current);
         if ("archived".equals(current.status())) {
             throw new BizException(ErrorCode.PARAM_INVALID, "标签已归档，请先恢复后再回滚");
         }
@@ -316,7 +551,8 @@ public class TagMetaService {
                 definition.valueRange(), definition.valueMultiple());
 
         int updated = tagMetaRepository.updateDefinition(tagCode, definition.tagName(),
-                definition.categoryCode(), tenantId, definition.valueType(), canonicalRange,
+                definition.categoryCode(), definition.dim1Code(), definition.dim2Code(), definition.priority(),
+                tenantId, definition.valueType(), definition.unit(), canonicalRange,
                 definition.valueMultiple(), definition.tagType(), definition.needValueAudit(),
                 definition.valueTtlDays(), definition.sensitivity(), normalizeBinding(definition.objectType()),
                 definition.sourceMode(), definition.writable(), current.version());
@@ -339,6 +575,7 @@ public class TagMetaService {
         if (!tag.online()) {
             throw new BizException(ErrorCode.TAG_NOT_ONLINE, "标签未上线，不能授权: " + tagCode);
         }
+        ensureNotDeleted(tag);
         if ("archived".equals(tag.status()) || tagAuditRepository.countPendingByTag(tagCode) > 0) {
             throw new BizException(ErrorCode.PARAM_INVALID, "标签存在待处理定义变更，暂不能授权");
         }
@@ -358,7 +595,8 @@ public class TagMetaService {
         merged = merged.isEmpty() ? tenantId : merged + "," + tenantId;
         String canonicalTenants = normalizeTenants(merged);
         int updated = tagMetaRepository.updateDefinition(tagCode, tag.tagName(), tag.categoryCode(),
-                canonicalTenants, tag.valueType(), tag.valueRange(), tag.valueMultiple(), tag.tagType(),
+                tag.dim1Code(), tag.dim2Code(), tag.priority(),
+                canonicalTenants, tag.valueType(), tag.unit(), tag.valueRange(), tag.valueMultiple(), tag.tagType(),
                 tag.needValueAudit(), tag.valueTtlDays(), tag.sensitivity(), tag.objectType(),
                 tag.sourceMode(), tag.writable(), tag.version());
         if (updated == 0) {
@@ -588,6 +826,15 @@ public class TagMetaService {
         return value == null || value.isBlank() ? null : value.trim();
     }
 
+    /** 单位归一化：空白 → null；上限 16 字符（与 tag_meta.unit 列宽一致） */
+    private static String normalizeUnit(String unit) {
+        String value = normalize(unit);
+        if (value != null && value.length() > 16) {
+            throw new BizException(ErrorCode.PARAM_INVALID, "单位超长（上限 16 字符）");
+        }
+        return value;
+    }
+
     /**
      * 标签注册请求（writable 为 null 时默认允许写入，兼容既有注册调用）。
      */
@@ -595,7 +842,11 @@ public class TagMetaService {
             String tagCode,
             String tagName,
             String categoryCode,
+            String dim1Code,
+            String dim2Code,
+            Integer priority,
             String valueType,
+            String unit,
             String valueRange,
             String tagType,
             boolean needValueAudit,
@@ -606,6 +857,16 @@ public class TagMetaService {
             String sourceMode,
             Boolean valueMultiple,
             Boolean writable) {
+
+        /** 兼容旧调用：不指定一级/二级维度、优先级与单位 */
+        public RegisterRequest(String tagCode, String tagName, String categoryCode, String valueType,
+                               String valueRange, String tagType, boolean needValueAudit, int valueTtlDays,
+                               String tenantId, String sensitivity, String objectType, String sourceMode,
+                               Boolean valueMultiple, Boolean writable) {
+            this(tagCode, tagName, categoryCode, null, null, null, valueType, null, valueRange, tagType,
+                    needValueAudit, valueTtlDays, tenantId, sensitivity, objectType, sourceMode,
+                    valueMultiple, writable);
+        }
     }
 
     /**
@@ -614,8 +875,12 @@ public class TagMetaService {
     public record UpdateRequest(
             String tagName,
             String categoryCode,
+            String dim1Code,
+            String dim2Code,
+            Integer priority,
             String tenantId,
             String valueType,
+            String unit,
             String valueRange,
             String tagType,
             Boolean needValueAudit,
@@ -626,5 +891,15 @@ public class TagMetaService {
             Boolean valueMultiple,
             Boolean writable,
             Integer version) {
+
+        /** 兼容旧调用：不指定一级/二级维度、优先级与单位 */
+        public UpdateRequest(String tagName, String categoryCode, String tenantId, String valueType,
+                             String valueRange, String tagType, Boolean needValueAudit, Integer valueTtlDays,
+                             String sensitivity, String objectType, String sourceMode, Boolean valueMultiple,
+                             Boolean writable, Integer version) {
+            this(tagName, categoryCode, null, null, null, tenantId, valueType, null, valueRange, tagType,
+                    needValueAudit, valueTtlDays, sensitivity, objectType, sourceMode, valueMultiple,
+                    writable, version);
+        }
     }
 }

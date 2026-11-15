@@ -3,6 +3,7 @@ package com.tagplatform.write.service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tagplatform.access.RateLimiter;
 import com.tagplatform.common.BizException;
+import com.tagplatform.common.ObjectIndexHook;
 import com.tagplatform.common.ErrorCode;
 import com.tagplatform.common.RequestContext;
 import com.tagplatform.config.AppProperties;
@@ -46,13 +47,14 @@ public class TagValueWriteService {
     private final TagValueStore tagValueStore;
     private final IdempotencyService idempotencyService;
     private final OutboxService outboxService;
+    private final ObjectIndexHook objectIndexHook;
     private final ObjectMapper objectMapper;
     private final AppProperties props;
 
     public TagValueWriteService(TagMetaRepository tagMetaRepository, ObjectTypeRepository objectTypeRepository,
                                 ValueValidator valueValidator, RateLimiter rateLimiter, TagValueStore tagValueStore,
                                 IdempotencyService idempotencyService, OutboxService outboxService,
-                                ObjectMapper objectMapper, AppProperties props) {
+                                ObjectIndexHook objectIndexHook, ObjectMapper objectMapper, AppProperties props) {
         this.tagMetaRepository = tagMetaRepository;
         this.objectTypeRepository = objectTypeRepository;
         this.valueValidator = valueValidator;
@@ -60,6 +62,7 @@ public class TagValueWriteService {
         this.tagValueStore = tagValueStore;
         this.idempotencyService = idempotencyService;
         this.outboxService = outboxService;
+        this.objectIndexHook = objectIndexHook;
         this.objectMapper = objectMapper;
         this.props = props;
     }
@@ -67,14 +70,29 @@ public class TagValueWriteService {
     // ------------------------------------------------------------------ write
 
     public WriteResult write(WriteRequest request, String tenantId, String requestId) {
+        return write(request, tenantId, requestId, true);
+    }
+
+    /**
+     * @param rateLimit 是否执行频控：HTTP 开放 API 为 true；
+     *                  Kafka 内部通道为 false（批量消费不应受「每操作员 20 QPS」约束）
+     */
+    public WriteResult write(WriteRequest request, String tenantId, String requestId, boolean rateLimit) {
+        return writeWithOutcome(request, tenantId, requestId, rateLimit).result();
+    }
+
+    /**
+     * 与 {@link #write} 同语义，额外返回「是否命中幂等重放」——Kafka 接入看板需要区分首次写入与重复消息。
+     */
+    public WriteOutcome writeWithOutcome(WriteRequest request, String tenantId, String requestId, boolean rateLimit) {
         String bizRequestId = requireBizRequestId(request.bizRequestId());
         if (!idempotencyService.tryClaim(bizRequestId, tenantId)) {
-            return replayOrThrow(bizRequestId);
+            return new WriteOutcome(replayOrThrow(bizRequestId), true);
         }
         try {
-            WriteResult result = doWrite(request, tenantId, requestId, bizRequestId, null);
+            WriteResult result = doWrite(request, tenantId, requestId, bizRequestId, null, rateLimit);
             idempotencyService.complete(bizRequestId, toJson(result));
-            return result;
+            return new WriteOutcome(result, false);
         } catch (RuntimeException e) {
             idempotencyService.release(bizRequestId);
             throw e;
@@ -93,7 +111,7 @@ public class TagValueWriteService {
         }
         try {
             WriteResult result = doWrite(request, tenantId, requestId, bizRequestId,
-                    new ReviewInfo(auditBy, auditRemark));
+                    new ReviewInfo(auditBy, auditRemark), true);
             idempotencyService.complete(bizRequestId, toJson(result));
             return result;
         } catch (RuntimeException e) {
@@ -103,7 +121,7 @@ public class TagValueWriteService {
     }
 
     private WriteResult doWrite(WriteRequest request, String tenantId, String requestId, String bizRequestId,
-                                ReviewInfo review) {
+                                ReviewInfo review, boolean rateLimit) {
         List<WriteRequest.WriteItem> items = request.items();
         checkBatch(items);
 
@@ -117,19 +135,22 @@ public class TagValueWriteService {
                 .map(OperatorDto::operatorId)
                 .filter(id -> id != null && !id.isBlank())
                 .collect(Collectors.toSet());
-        for (String operatorId : operatorIds) {
-            rateLimiter.checkOperator(tenantId, operatorId);
+        if (rateLimit) {
+            for (String operatorId : operatorIds) {
+                rateLimiter.checkOperator(tenantId, operatorId);
+            }
         }
 
         LocalDateTime now = LocalDateTime.now();
         List<PreparedItem> prepared = new ArrayList<>(items.size());
         for (int i = 0; i < items.size(); i++) {
-            prepared.add(prepare(items.get(i), i, tenantId, requestId, now, tagMap, objectTypeMap, review));
+            prepared.add(prepare(items.get(i), i, tenantId, requestId, now, tagMap, objectTypeMap, review, rateLimit));
         }
 
         // 只写变更流水；tag_value_latest 由外部程序消费后自行维护
         for (PreparedItem p : prepared) {
             tagValueStore.insertHistory(p.value());
+            touchObjectIndex(tenantId, p.value());
             RequestContext.recordTagWrite(p.value().tagCode());
             RequestContext.setOperatorId(p.value().operatorId());
             RequestContext.setObject(p.value().objectType(), p.value().objectId());
@@ -153,9 +174,18 @@ public class TagValueWriteService {
         return new WriteResult(bizRequestId, prepared.size(), prepared.size() - pendingCount, pendingCount, results);
     }
 
+    /** 登记对象索引（下拉数据源）并更新对象名称；辅助数据，异常不阻断写入主流程 */
+    private void touchObjectIndex(String tenantId, TagValue value) {
+        try {
+            objectIndexHook.touch(tenantId, value.objectType(), value.objectId(), value.objectName());
+        } catch (RuntimeException ignore) {
+            // 索引登记失败不影响写入结果
+        }
+    }
+
     private PreparedItem prepare(WriteRequest.WriteItem item, int index, String tenantId, String requestId,
                                  LocalDateTime now, Map<String, TagMeta> tagMap,
-                                 Map<String, ObjectTypeMeta> objectTypeMap, ReviewInfo review) {
+                                 Map<String, ObjectTypeMeta> objectTypeMap, ReviewInfo review, boolean rateLimit) {
         if (item == null) {
             throw itemError(index, null, ErrorCode.PARAM_INVALID, "条目不能为 null");
         }
@@ -177,9 +207,8 @@ public class TagValueWriteService {
             throw itemError(index, item, ErrorCode.OBJECT_TYPE_NOT_REGISTERED,
                     "对象类型已停用: " + item.objectType());
         }
-        if (!objectType.idMatches(item.objectId())) {
-            throw itemError(index, item, ErrorCode.PARAM_INVALID,
-                    "object_id 不符合 " + item.objectType() + " 的格式要求: " + objectType.idPattern());
+        if (!objectType.idPresent(item.objectId())) {
+            throw itemError(index, item, ErrorCode.PARAM_INVALID, "object_id 不能为空");
         }
         TagMeta tag = tagMap.get(item.tagCode());
         if (tag == null || !tag.visibleTo(tenantId)) {
@@ -224,7 +253,9 @@ public class TagValueWriteService {
         checkLength(index, item, "operator.operator_name", op.operatorName(), 128);
         checkLength(index, item, "operator.operator_org", op.operatorOrg(), 128);
 
-        rateLimiter.checkObjectTag(tenantId, item.objectType(), item.objectId(), item.tagCode());
+        if (rateLimit) {
+            rateLimiter.checkObjectTag(tenantId, item.objectType(), item.objectId(), item.tagCode());
+        }
 
         LocalDateTime operateTime = item.operateTime() != null ? item.operateTime() : now;
         LocalDateTime bizTime = item.bizTime() != null ? item.bizTime() : operateTime;
@@ -234,7 +265,7 @@ public class TagValueWriteService {
         LocalDateTime auditTime = review == null ? null : now;
         String auditRemark = review == null ? null : review.auditRemark();
 
-        TagValue value = new TagValue(tenantId, item.objectType(), item.objectId(), item.tagCode(),
+        TagValue value = new TagValue(tenantId, item.objectType(), item.objectId(), item.objectName(), item.tagCode(),
                 normalizedValue, tag.valueType(),
                 pendingAudit ? TagValue.STATUS_PENDING_AUDIT : TagValue.STATUS_EFFECTIVE,
                 bizTime, operateTime, expireTime,
@@ -315,7 +346,7 @@ public class TagValueWriteService {
             }
             LocalDateTime now = LocalDateTime.now();
             Long newVer = (last.ver() == null ? 1L : last.ver()) + 1;
-            TagValue revoked = new TagValue(tenantId, item.objectType(), item.objectId(), item.tagCode(),
+            TagValue revoked = new TagValue(tenantId, item.objectType(), item.objectId(), last.objectName(), item.tagCode(),
                     last.tagValue(), last.valueType(), TagValue.STATUS_REVOKED,
                     last.bizTime(), last.operateTime(), last.expireTime(),
                     op.operatorId(), op.operatorName(), op.operatorType(), op.operatorOrg(),

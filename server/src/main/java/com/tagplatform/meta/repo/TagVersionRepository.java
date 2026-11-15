@@ -27,6 +27,7 @@ public class TagVersionRepository {
                     rs.getString("tag_name"),
                     rs.getString("category_code"),
                     rs.getString("value_type"),
+                    rs.getString("unit"),
                     rs.getString("value_range"),
                     rs.getInt("value_multiple") == 1,
                     rs.getString("tag_type"),
@@ -36,7 +37,10 @@ public class TagVersionRepository {
                     rs.getString("sensitivity"),
                     rs.getString("object_type"),
                     rs.getString("source_mode"),
-                    rs.getInt("writable") == 1),
+                    rs.getInt("writable") == 1,
+                    rs.getString("dim1_code"),
+                    rs.getString("dim2_code"),
+                    (Integer) rs.getObject("priority")),
             rs.getString("composition_json"),
             rs.getTimestamp("created_at").toLocalDateTime());
 
@@ -49,16 +53,18 @@ public class TagVersionRepository {
     public void insert(TagMeta meta, String changeType, String changeBy, String changeSummary) {
         jdbcTemplate.update("""
                 INSERT INTO tag_meta_version (tag_code, version, change_type, change_by, change_summary,
-                                              tag_name, category_code, value_type, value_range, value_multiple,
+                                              tag_name, category_code, value_type, unit, value_range, value_multiple,
                                               tag_type, need_value_audit, value_ttl_days, tenant_id, sensitivity,
-                                              object_type, source_mode, writable, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                              object_type, source_mode, writable, dim1_code, dim2_code, priority,
+                                              created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 meta.tagCode(), meta.version(), changeType, changeBy, changeSummary,
-                meta.tagName(), meta.categoryCode(), meta.valueType(), meta.valueRange(),
+                meta.tagName(), meta.categoryCode(), meta.valueType(), meta.unit(), meta.valueRange(),
                 meta.valueMultiple() ? 1 : 0, meta.tagType(), meta.needValueAudit() ? 1 : 0,
                 meta.valueTtlDays(), meta.tenantId(), meta.sensitivity(), meta.objectType(),
-                meta.sourceMode(), meta.writable() ? 1 : 0, LocalDateTime.now());
+                meta.sourceMode(), meta.writable() ? 1 : 0, meta.dim1Code(), meta.dim2Code(), meta.priority(),
+                LocalDateTime.now());
     }
 
     /** 组合标签的规则随定义版本一同快照；普通标签为 null */

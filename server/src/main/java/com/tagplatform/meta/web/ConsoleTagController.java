@@ -60,6 +60,65 @@ public class ConsoleTagController {
     }
 
     @RequirePermission("op.tag.manage")
+    @PostMapping("/tag-categories")
+    public ApiResponse<TagMetaRepository.CategoryInfo> createCategory(
+            @RequestBody TagMetaService.CategoryCreateRequest request) {
+        ConsolePermission.requireAdminOrTenantAdmin();
+        TagMetaRepository.CategoryInfo info = tagMetaService.createCategory(request);
+        auditLogService.record("CATEGORY_CREATE", null, null, null, request.categoryCode(),
+                "新增维度: " + request.categoryName()
+                        + (normalize(request.parentCode()) != null ? "（二级 · 父级 " + request.parentCode() + "）" : "（一级）"),
+                "success");
+        return ApiResponse.ok(info);
+    }
+
+    @RequirePermission("op.tag.manage")
+    @PutMapping("/tag-categories/{code}")
+    public ApiResponse<TagMetaRepository.CategoryInfo> updateCategory(
+            @PathVariable String code, @RequestBody TagMetaService.CategoryUpdateRequest request) {
+        ConsolePermission.requireAdminOrTenantAdmin();
+        TagMetaRepository.CategoryInfo before = tagMetaService.listCategories().stream()
+                .filter(c -> c.categoryCode().equals(code)).findFirst().orElse(null);
+        TagMetaRepository.CategoryInfo info = tagMetaService.updateCategory(code, request);
+        auditLogService.record("CATEGORY_UPDATE", null, null, null, code,
+                "编辑维度: " + (before != null ? before.categoryName() : code) + " → " + info.categoryName()
+                        + "（父级 " + info.parentCode() + " · 排序 " + info.sortNo() + "）",
+                "success");
+        return ApiResponse.ok(info);
+    }
+
+    /** 批量保存维度变更（控制台维度管理「保存变更」）：单事务，任一失败整体回滚 */
+    @RequirePermission("op.tag.manage")
+    @PostMapping("/tag-categories/batch")
+    public ApiResponse<java.util.Map<String, Integer>> batchSaveCategories(
+            @RequestBody TagMetaService.CategoryBatchRequest request) {
+        ConsolePermission.requireAdminOrTenantAdmin();
+        tagMetaService.applyCategoryChanges(request);
+        int created = request.creates() == null ? 0 : request.creates().size();
+        int updated = request.updates() == null ? 0 : request.updates().size();
+        int deleted = request.deletes() == null ? 0 : request.deletes().size();
+        auditLogService.record("CATEGORY_BATCH_SAVE", null, null, null, "batch",
+                "维度批量保存：新增 " + created + " · 修改 " + updated + " · 删除 " + deleted, "success");
+        return ApiResponse.ok(java.util.Map.of("created", created, "updated", updated, "deleted", deleted));
+    }
+
+    @RequirePermission("op.tag.manage")
+    @org.springframework.web.bind.annotation.DeleteMapping("/tag-categories/{code}")
+    public ApiResponse<Void> deleteCategory(@PathVariable String code) {
+        ConsolePermission.requireAdminOrTenantAdmin();
+        TagMetaRepository.CategoryInfo target = tagMetaService.listCategories().stream()
+                .filter(c -> c.categoryCode().equals(code)).findFirst().orElse(null);
+        tagMetaService.deleteCategory(code);
+        auditLogService.record("CATEGORY_DELETE", null, null, null, code,
+                "删除维度: " + (target != null ? target.categoryName() : code), "success");
+        return ApiResponse.ok(null);
+    }
+
+    private static String normalize(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
+    }
+
+    @RequirePermission("op.tag.manage")
     @PostMapping("/tags")
     public ApiResponse<TagMeta> register(@RequestBody TagMetaService.RegisterRequest request) {
         ConsolePermission.requireAdminOrTenantAdmin();
@@ -149,6 +208,17 @@ public class ConsoleTagController {
         tagMetaService.restore(tagCode);
         auditLogService.record("TAG_RESTORE", null, null, null, tagCode,
                 "恢复已归档标签为已下线", "success");
+        return ApiResponse.ok(null);
+    }
+
+    /** 彻底删除已归档标签：控制台不再展示；数据库行与打标流水/审核历史保留可查，tag_code 不可复用，控制台不可恢复 */
+    @RequirePermission("op.tag.manage")
+    @PostMapping("/tags/{tagCode}/delete")
+    public ApiResponse<Void> delete(@PathVariable("tagCode") String tagCode) {
+        ConsolePermission.requireAdminOrTenantAdmin();
+        tagMetaService.deleteArchived(tagCode);
+        auditLogService.record("TAG_DELETE", null, null, null, tagCode,
+                "彻底删除已归档标签（控制台不再展示；数据库记录与打标流水保留，tag_code 不可复用）", "success");
         return ApiResponse.ok(null);
     }
 

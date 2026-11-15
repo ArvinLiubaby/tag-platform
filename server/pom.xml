@@ -7,7 +7,7 @@
   <parent>
     <groupId>com.tagplatform</groupId>
     <artifactId>tag-platform-parent</artifactId>
-    <version>1.17.0</version>
+    <version>1.22.11</version>
   </parent>
 
   <artifactId>tag-platform-server</artifactId>
@@ -30,6 +30,18 @@
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+
+    <!-- Kafka 标签写入通道（tag-platform.kafka.enabled=true 时启用） -->
+    <dependency>
+      <groupId>org.springframework.kafka</groupId>
+      <artifactId>spring-kafka</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>org.springframework.kafka</groupId>
+      <artifactId>spring-kafka-test</artifactId>
+      <scope>test</scope>
     </dependency>
 
     <!-- 数据库迁移：生产 MySQL / demo H2 -->

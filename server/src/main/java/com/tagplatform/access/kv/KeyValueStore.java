@@ -20,4 +20,10 @@ public interface KeyValueStore {
 
     /** 原子自增；键不存在或已过期时从 1 开始并设置 TTL，返回自增后的值 */
     long increment(String key, Duration ttl);
+
+    /** 剩余存活时间；键不存在、已过期或无过期时间时返回 empty */
+    Optional<Duration> remainingTtl(String key);
+
+    /** 重新设置存活时间（滑动续期）；键不存在时返回 false */
+    boolean expire(String key, Duration ttl);
 }

@@ -2,6 +2,7 @@ package com.tagplatform.write.web;
 
 import com.tagplatform.common.ApiResponse;
 import com.tagplatform.common.RequestContext;
+import com.tagplatform.write.service.WriteIngressService;
 import com.tagplatform.write.service.TagValueWriteService;
 import com.tagplatform.write.web.dto.DeleteRequest;
 import com.tagplatform.write.web.dto.WriteRequest;
@@ -20,17 +21,19 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping({"/api/v1/open", "/open/v1"})
 public class OpenWriteController {
 
+    private final WriteIngressService writeIngressService;
     private final TagValueWriteService tagValueWriteService;
 
-    public OpenWriteController(TagValueWriteService tagValueWriteService) {
+    public OpenWriteController(WriteIngressService writeIngressService,
+                               TagValueWriteService tagValueWriteService) {
+        this.writeIngressService = writeIngressService;
         this.tagValueWriteService = tagValueWriteService;
     }
 
     @PostMapping("/tag-values/write")
     public ApiResponse<WriteResult> write(@RequestBody WriteRequest request) {
-        WriteResult result = tagValueWriteService.write(request,
-                RequestContext.getTenantId(), RequestContext.getRequestId());
-        return ApiResponse.ok(result);
+        return ApiResponse.ok(writeIngressService.submit(request, RequestContext.getTenantId(),
+                RequestContext.getRequestId(), true, "http").result());
     }
 
     @PostMapping("/tag-values/delete")

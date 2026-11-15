@@ -1,5 +1,9 @@
 package com.tagplatform.workbench;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.tagplatform.meta.TagOptions;
+import com.tagplatform.meta.model.TagMeta;
+import com.tagplatform.meta.repo.TagMetaRepository;
 import com.tagplatform.workbench.TaskModels.ItemRow;
 import com.tagplatform.workbench.TaskModels.ItemValue;
 import com.tagplatform.workbench.TaskModels.PendingValue;
@@ -25,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * 打标任务仓储（tag_task / tag_task_tag / tag_task_item / tag_task_item_value / tag_task_event）。
@@ -49,6 +54,7 @@ public class TaskRepository {
             nullableLong(rs.getObject("reviewer_user_id")),
             rs.getString("reviewer_name"),
             rs.getInt("review_required") == 1,
+            rs.getInt("all_objects") == 1,
             rs.getInt("total_items"),
             rs.getInt("completed_items"),
             rs.getInt("rejected_items"),
@@ -80,9 +86,14 @@ public class TaskRepository {
             toLdt(rs.getTimestamp("updated_at")));
 
     private final JdbcTemplate jdbcTemplate;
+    private final TagMetaRepository tagMetaRepository;
+    private final ObjectMapper objectMapper;
 
-    public TaskRepository(JdbcTemplate jdbcTemplate) {
+    public TaskRepository(JdbcTemplate jdbcTemplate, TagMetaRepository tagMetaRepository,
+                          ObjectMapper objectMapper) {
         this.jdbcTemplate = jdbcTemplate;
+        this.tagMetaRepository = tagMetaRepository;
+        this.objectMapper = objectMapper;
     }
 
     // ------------------------------------------------------------------ task
@@ -90,7 +101,7 @@ public class TaskRepository {
     public long insertTask(String taskCode, String tenantId, String title, String description,
                            String objectType, String taskType, String status, String priority,
                            String assignmentMode, Long assigneeUserId, String team, Long reviewerUserId,
-                           boolean reviewRequired, int totalItems, String createdBy,
+                           boolean reviewRequired, boolean allObjects, int totalItems, String createdBy,
                            LocalDateTime publishedAt) {
         LocalDateTime now = LocalDateTime.now();
         KeyHolder keyHolder = new GeneratedKeyHolder();
@@ -98,9 +109,10 @@ public class TaskRepository {
             PreparedStatement ps = connection.prepareStatement("""
                     INSERT INTO tag_task (task_code, tenant_id, title, description, object_type, task_type,
                                           status, priority, assignment_mode, assignee_user_id, team,
-                                          reviewer_user_id, review_required, total_items, completed_items,
-                                          rejected_items, published_at, created_by, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?)
+                                          reviewer_user_id, review_required, all_objects, total_items,
+                                          completed_items, rejected_items, published_at, created_by,
+                                          created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?)
                     """, Statement.RETURN_GENERATED_KEYS);
             ps.setString(1, taskCode);
             ps.setString(2, tenantId);
@@ -115,11 +127,12 @@ public class TaskRepository {
             ps.setString(11, team);
             ps.setObject(12, reviewerUserId);
             ps.setInt(13, reviewRequired ? 1 : 0);
-            ps.setInt(14, totalItems);
-            ps.setTimestamp(15, publishedAt == null ? null : Timestamp.valueOf(publishedAt));
-            ps.setString(16, createdBy);
-            ps.setTimestamp(17, Timestamp.valueOf(now));
+            ps.setInt(14, allObjects ? 1 : 0);
+            ps.setInt(15, totalItems);
+            ps.setTimestamp(16, publishedAt == null ? null : Timestamp.valueOf(publishedAt));
+            ps.setString(17, createdBy);
             ps.setTimestamp(18, Timestamp.valueOf(now));
+            ps.setTimestamp(19, Timestamp.valueOf(now));
             return ps;
         }, keyHolder);
         Number key = keyHolder.getKey();
@@ -150,6 +163,35 @@ public class TaskRepository {
                 """, args);
     }
 
+    /** 全部对象模式：写入时按需创建任务项（并发下依赖唯一约束，重复则回查已有项） */
+    public ItemRow createItem(long taskId, String objectType, String objectId) {
+        LocalDateTime now = LocalDateTime.now();
+        KeyHolder keyHolder = new GeneratedKeyHolder();
+        try {
+            jdbcTemplate.update(connection -> {
+                PreparedStatement ps = connection.prepareStatement("""
+                        INSERT INTO tag_task_item (task_id, object_type, object_id, status, created_at, updated_at)
+                        VALUES (?, ?, ?, 'pending', ?, ?)
+                        """, Statement.RETURN_GENERATED_KEYS);
+                ps.setLong(1, taskId);
+                ps.setString(2, objectType);
+                ps.setString(3, objectId);
+                ps.setTimestamp(4, Timestamp.valueOf(now));
+                ps.setTimestamp(5, Timestamp.valueOf(now));
+                return ps;
+            }, keyHolder);
+            Number key = keyHolder.getKey();
+            if (key != null) {
+                return findItem(key.longValue()).orElseThrow();
+            }
+        } catch (org.springframework.dao.DuplicateKeyException e) {
+            // 并发写入同一对象：唯一键冲突后回查
+        }
+        return findItemByObject(taskId, objectId)
+                .orElseThrow(() -> new IllegalStateException(
+                        "任务项创建失败: task=" + taskId + ", object=" + objectId));
+    }
+
     public Optional<TaskRow> findTask(long taskId) {
         return jdbcTemplate.query(taskSelect() + " WHERE t.id = ?", TASK_MAPPER, taskId)
                 .stream().findFirst();
@@ -176,6 +218,301 @@ public class TaskRepository {
         return jdbcTemplate.query(sql.toString(), TASK_MAPPER, args.toArray());
     }
 
+    /**
+     * 开放 API：按任务/客服/对象过滤任务；LEFT JOIN 保证尚未导入对象项的任务也能查到。
+     * objectPairs 为 (type, id) 条件对（type 为 null = 不限定类型，任一命中即返回该任务）；
+     * pairs 为空且 objectTypes 非空时按对象类型 IN 过滤。
+     */
+    public List<TaskRow> listTasksForOpen(String tenantId, List<String> statuses, String operatorId,
+                                          List<String> objectTypes, List<String[]> objectPairs,
+                                          Long taskId, int limit, int offset) {
+        StringBuilder sql = new StringBuilder("""
+                SELECT DISTINCT t.*, au.display_name AS assignee_name, ru.display_name AS reviewer_name
+                  FROM tag_task t
+                  LEFT JOIN tag_task_item i ON i.task_id = t.id
+                  LEFT JOIN console_user au ON au.id = t.assignee_user_id
+                  LEFT JOIN console_user ru ON ru.id = t.reviewer_user_id
+                 WHERE t.tenant_id = ?
+                """);
+        List<Object> args = new ArrayList<>();
+        args.add(tenantId);
+        if (taskId != null) { sql.append(" AND t.id = ?"); args.add(taskId); }
+        appendStatusFilter(sql, args, statuses);
+        if (operatorId != null && !operatorId.isBlank()) { sql.append(" AND i.operator_id = ?"); args.add(operatorId); }
+        appendObjectFilter(sql, args, objectTypes, objectPairs);
+        sql.append(" ORDER BY t.created_at DESC LIMIT ? OFFSET ?");
+        args.add(Math.max(1, Math.min(limit, 200)));
+        args.add(Math.max(offset, 0));
+        return jdbcTemplate.query(sql.toString(), TASK_MAPPER, args.toArray());
+    }
+
+    public long countTasksForOpen(String tenantId, List<String> statuses, String operatorId,
+                                  List<String> objectTypes, List<String[]> objectPairs, Long taskId) {
+        StringBuilder sql = new StringBuilder("""
+                SELECT COUNT(DISTINCT t.id) FROM tag_task t LEFT JOIN tag_task_item i ON i.task_id = t.id
+                 WHERE t.tenant_id = ?
+                """);
+        List<Object> args = new ArrayList<>();
+        args.add(tenantId);
+        if (taskId != null) { sql.append(" AND t.id = ?"); args.add(taskId); }
+        appendStatusFilter(sql, args, statuses);
+        if (operatorId != null && !operatorId.isBlank()) { sql.append(" AND i.operator_id = ?"); args.add(operatorId); }
+        appendObjectFilter(sql, args, objectTypes, objectPairs);
+        Long n = jdbcTemplate.queryForObject(sql.toString(), Long.class, args.toArray());
+        return n == null ? 0L : n;
+    }
+
+    /** 任务状态过滤：statuses 非空时按 IN 匹配（单值/多值统一走此处） */
+    private void appendStatusFilter(StringBuilder sql, List<Object> args, List<String> statuses) {
+        if (statuses == null || statuses.isEmpty()) {
+            return;
+        }
+        sql.append(" AND t.status IN (")
+           .append(String.join(",", java.util.Collections.nCopies(statuses.size(), "?")))
+           .append(")");
+        args.addAll(statuses);
+    }
+
+    /**
+     * 拼接对象过滤条件：pairs 非空时逐对 OR（type 非空 = (type,id) 精确配对，type 空 = 仅按 ID）；
+     * 否则 types 非空时按对象类型 IN。两者都空 = 不加对象条件。
+     *
+     * <p><b>「全部对象」任务（all_objects=1）按类型整体命中</b>：这类任务不预设对象清单，
+     * 该类型下任意对象都归属它，因此不能只靠 tag_task_item 精确匹配——否则从未写入过的
+     * 对象（或任意 object_id）会查不到任务。写入过的对象仍会以任务项形式存在，
+     * 两条路径取并集，DISTINCT 去重。</p>
+     */
+    private void appendObjectFilter(StringBuilder sql, List<Object> args,
+                                    List<String> objectTypes, List<String[]> objectPairs) {
+        if (objectPairs != null && !objectPairs.isEmpty()) {
+            sql.append(" AND (");
+            List<String> ors = new ArrayList<>();
+            for (String[] pair : objectPairs) {
+                if (pair[0] != null) {
+                    ors.add("((i.object_type = ? AND i.object_id = ?)"
+                            + " OR (t.all_objects = 1 AND t.object_type = ?))");
+                    args.add(pair[0]);
+                    args.add(pair[1]);
+                    args.add(pair[0]);
+                } else {
+                    // 只给 ID 不给类型时无法判断类型是否匹配，全部对象模式任务一律命中
+                    ors.add("((i.object_id = ?) OR (t.all_objects = 1))");
+                    args.add(pair[1]);
+                }
+            }
+            sql.append(String.join(" OR ", ors)).append(")");
+            return;
+        }
+        if (objectTypes != null && !objectTypes.isEmpty()) {
+            String placeholders = String.join(", ",
+                    java.util.Collections.nCopies(objectTypes.size(), "?"));
+            sql.append(" AND (i.object_type IN (").append(placeholders).append(")")
+               .append(" OR (t.all_objects = 1 AND t.object_type IN (")
+               .append(placeholders).append(")))");
+            args.addAll(objectTypes);
+            args.addAll(objectTypes);
+        }
+    }
+
+    /** 开放 API：任务项按客服/对象/状态统计（objectType 可空 = 不限定类型） */
+    public TaskModels.TaskStats itemStats(long taskId, String operatorId, String objectType, String objectId) {
+        StringBuilder sql = new StringBuilder("SELECT i.status, COUNT(*) cnt FROM tag_task_item i WHERE i.task_id = ?");
+        List<Object> args = new ArrayList<>();
+        args.add(taskId);
+        if (operatorId != null && !operatorId.isBlank()) { sql.append(" AND i.operator_id = ?"); args.add(operatorId); }
+        if (objectType != null && !objectType.isBlank()) { sql.append(" AND i.object_type = ?"); args.add(objectType); }
+        if (objectId != null && !objectId.isBlank()) { sql.append(" AND i.object_id = ?"); args.add(objectId); }
+        sql.append(" GROUP BY i.status");
+        Map<String, Long> counts = new LinkedHashMap<>();
+        jdbcTemplate.query(sql.toString(), rs -> { counts.put(rs.getString("status"), rs.getLong("cnt")); }, args.toArray());
+        long pending = counts.getOrDefault("pending", 0L);
+        long claimed = counts.getOrDefault("claimed", 0L);
+        long inProgress = counts.getOrDefault("in_progress", 0L);
+        long submitted = counts.getOrDefault("submitted", 0L);
+        long approved = counts.getOrDefault("approved", 0L);
+        long rejected = counts.getOrDefault("rejected", 0L);
+        long skipped = counts.getOrDefault("skipped", 0L);
+        long total = pending + claimed + inProgress + submitted + approved + rejected + skipped;
+        return new TaskModels.TaskStats(total, pending, claimed, inProgress, submitted, approved, rejected, skipped);
+    }
+
+    /** 开放 API：跨任务的任务项查询 */
+    public List<TaskModels.OpenTaskItemRow> listOpenTaskItems(String tenantId, Long taskId, String operatorId,
+                                                              String objectId, String status, int limit, int offset) {
+        StringBuilder sql = new StringBuilder("""
+                SELECT i.*, au.display_name AS assignee_name, ru.display_name AS reviewer_name,
+                       t.task_code, t.title AS task_title
+                  FROM tag_task_item i
+                  JOIN tag_task t ON t.id = i.task_id
+                  LEFT JOIN console_user au ON au.id = i.assignee_user_id
+                  LEFT JOIN console_user ru ON ru.id = i.reviewer_user_id
+                 WHERE t.tenant_id = ?
+                """);
+        List<Object> args = new ArrayList<>();
+        args.add(tenantId);
+        if (taskId != null) { sql.append(" AND i.task_id = ?"); args.add(taskId); }
+        if (operatorId != null && !operatorId.isBlank()) { sql.append(" AND i.operator_id = ?"); args.add(operatorId); }
+        if (objectId != null && !objectId.isBlank()) { sql.append(" AND i.object_id = ?"); args.add(objectId); }
+        if (status != null && !status.isBlank()) { sql.append(" AND i.status = ?"); args.add(status); }
+        sql.append(" ORDER BY i.updated_at DESC, i.id DESC LIMIT ? OFFSET ?");
+        args.add(Math.max(1, Math.min(limit, 200)));
+        args.add(Math.max(offset, 0));
+        return jdbcTemplate.query(sql.toString(), (rs, rowNum) -> new TaskModels.OpenTaskItemRow(
+                ITEM_MAPPER.mapRow(rs, rowNum), rs.getString("task_code"), rs.getString("task_title")),
+                args.toArray());
+    }
+
+    public long countOpenTaskItems(String tenantId, Long taskId, String operatorId, String objectId, String status) {
+        StringBuilder sql = new StringBuilder("""
+                SELECT COUNT(*) FROM tag_task_item i JOIN tag_task t ON t.id = i.task_id
+                 WHERE t.tenant_id = ?
+                """);
+        List<Object> args = new ArrayList<>();
+        args.add(tenantId);
+        if (taskId != null) { sql.append(" AND i.task_id = ?"); args.add(taskId); }
+        if (operatorId != null && !operatorId.isBlank()) { sql.append(" AND i.operator_id = ?"); args.add(operatorId); }
+        if (objectId != null && !objectId.isBlank()) { sql.append(" AND i.object_id = ?"); args.add(objectId); }
+        if (status != null && !status.isBlank()) { sql.append(" AND i.status = ?"); args.add(status); }
+        Long n = jdbcTemplate.queryForObject(sql.toString(), Long.class, args.toArray());
+        return n == null ? 0L : n;
+    }
+
+    /**
+     * 开放 API：待打标清单（按对象分页）。
+     * 命中条件：对象项未终结，且存在任务标签「无 approved 值」；includeOptional=false 时只看必填标签。
+     * objectPairs 为空时按 objectTypes 过滤；否则按 (type,id) 精确配对（支持同类型多对象 / 跨类型混合）。
+     */
+    public List<TaskModels.OpenTaskItemRow> listOpenTodoItems(String tenantId, Long taskId,
+                                                              List<String> objectTypes,
+                                                              List<String[]> objectPairs,
+                                                              boolean includeOptional,
+                                                              int limit, int offset) {
+        StringBuilder sql = new StringBuilder("""
+                SELECT i.*, au.display_name AS assignee_name, ru.display_name AS reviewer_name,
+                       t.task_code, t.title AS task_title
+                  FROM tag_task_item i
+                  JOIN tag_task t ON t.id = i.task_id
+                  LEFT JOIN console_user au ON au.id = i.assignee_user_id
+                  LEFT JOIN console_user ru ON ru.id = i.reviewer_user_id
+                 WHERE t.tenant_id = ?
+                   AND t.status IN ('published', 'in_progress', 'reviewing')
+                """);
+        List<Object> args = new ArrayList<>();
+        args.add(tenantId);
+        appendTodoScope(sql, args, objectTypes, objectPairs);
+        if (taskId != null) {
+            sql.append("   AND i.task_id = ?\n");
+            args.add(taskId);
+        }
+        sql.append("""
+                   AND i.status NOT IN ('skipped', 'submitted', 'approved')
+                   AND EXISTS (SELECT 1 FROM tag_task_tag tt
+                                WHERE tt.task_id = i.task_id
+                """);
+        if (!includeOptional) {
+            sql.append("                  AND tt.required = 1\n");
+        }
+        sql.append("""
+                                  AND NOT EXISTS (SELECT 1 FROM tag_task_item_value v
+                                                   WHERE v.item_id = i.id AND v.tag_code = tt.tag_code
+                                                     AND v.status = 'approved'))
+                """);
+        sql.append(" ORDER BY i.id LIMIT ? OFFSET ?");
+        // 上限放宽到 1000：指定对象查询时要在内存里追加「全部对象」虚拟项后再分页
+        args.add(Math.max(1, Math.min(limit, 1000)));
+        args.add(Math.max(offset, 0));
+        return jdbcTemplate.query(sql.toString(), (rs, rowNum) -> new TaskModels.OpenTaskItemRow(
+                ITEM_MAPPER.mapRow(rs, rowNum), rs.getString("task_code"), rs.getString("task_title")),
+                args.toArray());
+    }
+
+    /**
+     * 「全部对象」任务中，尚未包含指定对象的任务。
+     *
+     * <p>用于待打标清单补虚拟任务项：这类任务（all_objects=1）不预设对象清单，
+     * 该类型下任意对象都归属它，因此即便对象从未写入、没有任务项，也应出现在待打标清单里。
+     * 已经写入过的对象会有真实任务项，由 listOpenTodoItems 返回，此处用 NOT EXISTS 排除，避免重复。</p>
+     */
+    public List<TaskRow> listAllObjectsTasksWithoutItem(String tenantId, String objectType, String objectId,
+                                                        Long taskId) {
+        StringBuilder sql = new StringBuilder("""
+                SELECT t.*, au.display_name AS assignee_name, ru.display_name AS reviewer_name
+                  FROM tag_task t
+                  LEFT JOIN console_user au ON au.id = t.assignee_user_id
+                  LEFT JOIN console_user ru ON ru.id = t.reviewer_user_id
+                 WHERE t.tenant_id = ?
+                   AND t.all_objects = 1
+                   AND t.object_type = ?
+                   AND t.status IN ('published', 'in_progress', 'reviewing')
+                   AND NOT EXISTS (SELECT 1 FROM tag_task_item i
+                                    WHERE i.task_id = t.id AND i.object_id = ?)
+                """);
+        List<Object> args = new ArrayList<>();
+        args.add(tenantId);
+        args.add(objectType);
+        args.add(objectId);
+        if (taskId != null) {
+            sql.append(" AND t.id = ?");
+            args.add(taskId);
+        }
+        return jdbcTemplate.query(sql.toString(), TASK_MAPPER, args.toArray());
+    }
+
+    public long countOpenTodoItems(String tenantId, Long taskId, List<String> objectTypes,
+                                   List<String[]> objectPairs, boolean includeOptional) {
+        StringBuilder sql = new StringBuilder("""
+                SELECT COUNT(*) FROM tag_task_item i JOIN tag_task t ON t.id = i.task_id
+                 WHERE t.tenant_id = ?
+                   AND t.status IN ('published', 'in_progress', 'reviewing')
+                """);
+        List<Object> args = new ArrayList<>();
+        args.add(tenantId);
+        appendTodoScope(sql, args, objectTypes, objectPairs);
+        if (taskId != null) {
+            sql.append("   AND i.task_id = ?\n");
+            args.add(taskId);
+        }
+        sql.append("""
+                   AND i.status NOT IN ('skipped', 'submitted', 'approved')
+                   AND EXISTS (SELECT 1 FROM tag_task_tag tt
+                                WHERE tt.task_id = i.task_id
+                """);
+        if (!includeOptional) {
+            sql.append("                  AND tt.required = 1\n");
+        }
+        sql.append("""
+                                  AND NOT EXISTS (SELECT 1 FROM tag_task_item_value v
+                                                   WHERE v.item_id = i.id AND v.tag_code = tt.tag_code
+                                                     AND v.status = 'approved'))
+                """);
+        Long n = jdbcTemplate.queryForObject(sql.toString(), Long.class, args.toArray());
+        return n == null ? 0L : n;
+    }
+
+    /** 待办对象范围条件：多类型用 IN，精确对象用 (type,id) OR 组合，全部参数化 */
+    private static void appendTodoScope(StringBuilder sql, List<Object> args,
+                                        List<String> objectTypes, List<String[]> objectPairs) {
+        if (objectPairs == null || objectPairs.isEmpty()) {
+            sql.append("   AND i.object_type IN (");
+            for (int i = 0; i < objectTypes.size(); i++) {
+                sql.append(i == 0 ? "?" : ", ?");
+            }
+            sql.append(")\n");
+            args.addAll(objectTypes);
+            return;
+        }
+        sql.append("   AND (");
+        for (int i = 0; i < objectPairs.size(); i++) {
+            if (i > 0) {
+                sql.append(" OR ");
+            }
+            sql.append("(i.object_type = ? AND i.object_id = ?)");
+            args.add(objectPairs.get(i)[0]);
+            args.add(objectPairs.get(i)[1]);
+        }
+        sql.append(")\n");
+    }
+
     public void markPublished(long taskId) {
         LocalDateTime now = LocalDateTime.now();
         jdbcTemplate.update("UPDATE tag_task SET status='published', published_at=?, updated_at=? WHERE id=?",
@@ -185,6 +522,35 @@ public class TaskRepository {
     public void updateTaskStatus(long taskId, String status) {
         jdbcTemplate.update("UPDATE tag_task SET status=?, updated_at=? WHERE id=?", status,
                 LocalDateTime.now(), taskId);
+    }
+
+    public void markVerified(long taskId) {
+        jdbcTemplate.update("UPDATE tag_task SET status='verified', updated_at=? WHERE id=?",
+                LocalDateTime.now(), taskId);
+    }
+
+    /** 已验收任务是否覆盖该对象+标签（用于临时打标拦截） */
+    public boolean existsVerifiedTaskFor(String tenantId, String objectType, String objectId, String tagCode) {
+        Integer n = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM tag_task t
+                  JOIN tag_task_item i ON i.task_id = t.id
+                  JOIN tag_task_tag tt ON tt.task_id = t.id
+                 WHERE t.tenant_id = ? AND t.status = 'verified' AND t.object_type = ?
+                   AND i.object_id = ? AND tt.tag_code = ?
+                """, Integer.class, tenantId, objectType, objectId, tagCode);
+        return n != null && n > 0;
+    }
+
+    /** 该对象在已验收任务中被锁定的标签 */
+    public List<String> verifiedTagCodes(String tenantId, String objectType, String objectId) {
+        return jdbcTemplate.queryForList("""
+                SELECT DISTINCT tt.tag_code FROM tag_task t
+                  JOIN tag_task_item i ON i.task_id = t.id
+                  JOIN tag_task_tag tt ON tt.task_id = t.id
+                 WHERE t.tenant_id = ? AND t.status = 'verified' AND t.object_type = ?
+                   AND i.object_id = ?
+                 ORDER BY tt.tag_code
+                """, String.class, tenantId, objectType, objectId);
     }
 
     public void markCompleted(long taskId) {
@@ -230,11 +596,33 @@ public class TaskRepository {
                 LocalDateTime.now(), taskId);
     }
 
+    /**
+     * 任务标签快照（tag_task_tag）并回填字典信息：tag_name / value_type / unit / value_range /
+     * value_multiple / options（枚举可选项，来自 tag_meta 当前定义，与开放字典 /tags 的 options 同源）。
+     * 标签已下线或删除时字典字段为 null，tag_code / required 仍返回。
+     */
     public List<TaskTag> listTaskTags(long taskId) {
-        return jdbcTemplate.query(
+        List<TaskTag> tags = jdbcTemplate.query(
                 "SELECT tag_code, required, sort_no FROM tag_task_tag WHERE task_id=? ORDER BY sort_no",
-                (rs, rowNum) -> new TaskTag(rs.getString("tag_code"), rs.getInt("required") == 1,
-                        rs.getInt("sort_no")), taskId);
+                (rs, rowNum) -> new TaskTag(rs.getString("tag_code"), null, rs.getInt("required") == 1,
+                        null, null, null, false, List.of(), rs.getInt("sort_no")), taskId);
+        if (tags.isEmpty()) {
+            return tags;
+        }
+        Set<String> codes = tags.stream().map(TaskTag::tagCode).collect(Collectors.toSet());
+        Map<String, TagMeta> metaByCode = new LinkedHashMap<>();
+        for (TagMeta meta : tagMetaRepository.findByCodes(codes)) {
+            metaByCode.putIfAbsent(meta.tagCode(), meta);
+        }
+        return tags.stream().map(t -> {
+            TagMeta meta = metaByCode.get(t.tagCode());
+            if (meta == null) {
+                return t;
+            }
+            return new TaskTag(t.tagCode(), meta.tagName(), t.required(), meta.valueType(),
+                    meta.unit(), meta.valueRange(), meta.valueMultiple(),
+                    TagOptions.of(meta, objectMapper), t.sortNo());
+        }).toList();
     }
 
     // ------------------------------------------------------------------ item
@@ -415,6 +803,42 @@ public class TaskRepository {
                                                  confidence, status, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, args);
+    }
+
+    /** 外部写入携带 task_id：记录/覆盖任务项的值（值已由写入接口落库，状态直接记 approved） */
+    public void upsertExternalItemValue(long itemId, String tagCode, String tagValue,
+                                        String remark, String evidenceUrl, String confidence) {
+        LocalDateTime now = LocalDateTime.now();
+        int updated = jdbcTemplate.update("""
+                UPDATE tag_task_item_value
+                   SET tag_value=?, remark=?, evidence_url=?, confidence=?, status='approved', updated_at=?
+                 WHERE item_id=? AND tag_code=?
+                """, tagValue, remark, evidenceUrl, confidence, now, itemId, tagCode);
+        if (updated > 0) {
+            return;
+        }
+        try {
+            jdbcTemplate.update("""
+                    INSERT INTO tag_task_item_value (item_id, tag_code, tag_value, remark, evidence_url,
+                                                     confidence, status, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, 'approved', ?, ?)
+                    """, itemId, tagCode, tagValue, remark, evidenceUrl, confidence, now, now);
+        } catch (org.springframework.dao.DuplicateKeyException e) {
+            jdbcTemplate.update("""
+                    UPDATE tag_task_item_value
+                       SET tag_value=?, remark=?, evidence_url=?, confidence=?, status='approved', updated_at=?
+                     WHERE item_id=? AND tag_code=?
+                    """, tagValue, remark, evidenceUrl, confidence, now, itemId, tagCode);
+        }
+    }
+
+    /** 外部写入已开始但尚未写齐：任务项进入进行中 */
+    public void markItemInProgressExternal(long itemId, String operatorId, String operatorName) {
+        jdbcTemplate.update("""
+                UPDATE tag_task_item
+                   SET status='in_progress', operator_id=?, operator_name=?, updated_at=?
+                 WHERE id=? AND status NOT IN ('submitted','approved','skipped')
+                """, operatorId, operatorName, LocalDateTime.now(), itemId);
     }
 
     public List<ItemValue> listItemValues(long itemId) {

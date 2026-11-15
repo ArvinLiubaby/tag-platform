@@ -42,6 +42,7 @@ public enum ErrorCode {
     NOT_PENDING_AUDIT(3010, "该标签值不在待审核状态", 200),
     TAG_OBJECT_TYPE_MISMATCH(3011, "标签不适用于该对象类型", 200),
     TAG_WRITE_DISABLED(3012, "标签不允许写入（写入开关已关闭）", 200),
+    TASK_VERIFIED_LOCK(3014, "任务已验收，禁止临时修改该标签值；如需变更请新建任务", 200),
     AUDIT_DISABLED(3013, "标签值审核已停用", 200),
 
     // ---- 4xxx 控制台会话与权限 ----

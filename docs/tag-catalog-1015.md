@@ -4,7 +4,7 @@
 > 落地范围：32 个标签（司机 17 / 车辆 15），归属租户 `risk_control`（客服打标系统接入）
 > 落地组件：分类树 = `V3__fleet_tag_categories.sql`（Flyway 预置）；标签注册与打标数据 = `data/seed-fleet-tags.sh`
 
-> **2026-10-22 运行口径变更**：测试环境（本机 8081）与生产环境（prod-host:8080）均已收敛为以下 32 个标签，全部归属 `risk_control`、敏感级 L2、TTL=0（长期有效）、`need_value_audit=false`；非核心标签已归档（测试 12 个、生产 9 个），历史值与审计记录保留。下文第 3 章明细表保留 1015 原始设计口径，仅用于追溯。
+> **2026-10-22 运行口径变更**：测试环境（本机 8081）与生产环境（tag-platform-host:8080）均已收敛为以下 32 个标签，全部归属 `risk_control`、敏感级 L2、TTL=0（长期有效）、`need_value_audit=false`；非核心标签已归档（测试 12 个、生产 9 个），历史值与审计记录保留。下文第 3 章明细表保留 1015 原始设计口径，仅用于追溯。
 
 ---
 
@@ -158,7 +158,7 @@
 
 1. **「客服手工可调整」= 再次写入**。同对象同标签再次写入即在 `tag_value_history` 追加新记录（不做覆盖），由外部写入程序更新 `tag_value_latest`；客服修正统计值时同样走 `POST /api/v1/open/tag-values/write`，`operator_type=human`。
 2. **敏感标签值**：`need_value_audit=true` 的 9 个标签（L3）写入时 `remark` 必填，流水状态为 `pending_audit`；平台值审核已停用（控制台只读、审核接口返回 3013），是否转为生效由下游链路处理。
-3. **来源可追溯**：每次写入的 operator/source 均落打标流水，可经 `GET /api/v1/open/operators/{operatorId}/tag-records` 按操作员（客服工号）回查。
+3. **来源可追溯**：每次写入的 operator/source 均落打标流水，可经 `GET /api/v1/open/tag-records?operator_id=` 按操作员（客服工号）回查。
 
 ## 5. 实体层级（E 列）约定
 
@@ -172,7 +172,7 @@
 **已实施**：标签字典 `tag_meta` 已陆续增加以下字段（V4/V5 迁移）并回填全部 32 标签及既有种子标签：
 - `object_type`（逗号分隔可多值，如 `driver,vehicle`；null = 不限）——由平台在写入时强制校验「标签-对象」匹配，不匹配整批拒绝（`code = 3011`）
 - `source_mode`（`manual` / `statistics` / `hybrid` / `algo`）——客服系统可直接查询「需要我打的标签」，如 `GET /api/v1/open/tags?object_type=driver&source_mode=manual|hybrid`
-- 组合查询：`GET /api/v1/open/objects/profile/combined`（`driver_id` / `vehicle_plate` 至少一个，可选 `tag_codes` 精确圈定）——一次拉取「司机+车辆」的标签当前值；`tag_codes` 传本章 32 个标签码即可精确取 32 个特征值（详见对接指南 5.5）
+- 组合查询：`GET /api/v1/open/objects/profiles`（`object_type=driver,vehicle` + `object_id=<司机ID>,<车辆ID>` 按位置配对，配 `include_empty=true` / `tag_codes`）——一次拉取「司机+车辆」的标签当前值；`tag_codes` 传本章 32 个标签码即可精确取 32 个特征值（详见对接指南 5.4）
 - `writable`（写入开关，V5 迁移，默认 `true`）——`false` 表示该标签**禁止写入**：POST 写入/作废时整批拒绝（`code = 3012`，message 含「不允许写入」）；平台管理员可在控制台「标签字典」页随时切换、即时生效
 
 ## 6. 演示数据与验证

@@ -20,8 +20,9 @@ const { TOKEN_KEY, USER_KEY, state, PAGE_TITLES, PAGE_SUBTITLES, STATUS_BADGE, R
       '    <div class="card-actions"><button class="btn btn-ghost btn-sm" id="pending-refresh">刷新</button></div>' +
       '  </div>' +
       '  <div class="card-body">' +
-      '    <div class="notice notice-info">标签值审核已停用：平台只记录打标流水，' +
-      '      <span class="code-inline">tag_value_latest</span> 由外部程序维护。</div>' +
+      '    <div class="notice notice-info">本队列展示打标流水中的待审核标签值（审核环节）。' +
+      '      当前审核功能已停用，界面为后续审核扩展预留；' +
+      '      <span class="code-inline">tag_value_latest</span> 由外部程序综合计算，不作为审核判定依据。</div>' +
       '  </div>' +
       '  <div id="pending-table"></div>' +
       '</div>';

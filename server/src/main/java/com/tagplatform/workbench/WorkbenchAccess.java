@@ -48,6 +48,18 @@ public final class WorkbenchAccess {
         requireRole("ADMIN", "TENANT_ADMIN", "TAGGER", "TASK_MANAGER");
     }
 
+    /** 临时打标（不依赖任务）仅管理类角色可用，打标员必须走任务 */
+    public static void requireAdhoc() {
+        String current = RequestContext.getConsoleRole();
+        if (current == null) {
+            throw new BizException(ErrorCode.CONSOLE_UNAUTHORIZED);
+        }
+        if (!java.util.Set.of("ADMIN", "TENANT_ADMIN", "TASK_MANAGER").contains(current)) {
+            throw new BizException(ErrorCode.CONSOLE_FORBIDDEN,
+                    "临时打标仅管理员 / 租户管理员 / 任务管理员可用，打标员请通过任务打标");
+        }
+    }
+
     public static void requireTaskManager() {
         requireRole("ADMIN", "TENANT_ADMIN", "TASK_MANAGER");
     }

@@ -190,7 +190,7 @@ class TagCompositionFlowIntegrationTest {
 
     private TagValue latest(String tagCode, String value) {
         LocalDateTime now = LocalDateTime.now();
-        return new TagValue(TENANT, "driver", OBJECT_ID, tagCode, value, "enum", TagValue.STATUS_EFFECTIVE,
+        return new TagValue(TENANT, "driver", OBJECT_ID, null, tagCode, value, "enum", TagValue.STATUS_EFFECTIVE,
                 now, now, null, "OP_IT", "集成测试操作员", "human", "风控中心", "test", "高",
                 null, null, null, null, null, "req-compose-it", now, 1L, null);
     }

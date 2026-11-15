@@ -169,7 +169,8 @@ public class TagCompositionService {
         String ruleJson = toJson(rule);
         String outputJson = toJson(rule.output());
         String valueRange = valueRange(rule, req.outputType());
-        TagMeta meta = new TagMeta(null, tagCode, tagName, normalize(req.categoryCode()), requireOutputType(req.outputType()),
+        TagMeta meta = new TagMeta(null, tagCode, tagName, normalize(req.categoryCode()),
+                null, normalize(req.categoryCode()), null, requireOutputType(req.outputType()), null,
                 valueRange, false, "derived", false, 0, tenantId, ruleMeta.sensitivity(), "offline", 1,
                 objectType, "derived", false, now, now);
         tagMetaRepository.insert(meta);
@@ -197,7 +198,8 @@ public class TagCompositionService {
         String valueRange = valueRange(rule, req.outputType());
 
         int updated = tagMetaRepository.updateDefinition(tagCode, tagName, normalize(req.categoryCode()),
-                meta.tenantId(), requireOutputType(req.outputType()), valueRange, false, "derived", false, 0,
+                meta.dim1Code(), normalize(req.categoryCode()), meta.priority(),
+                meta.tenantId(), requireOutputType(req.outputType()), meta.unit(), valueRange, false, "derived", false, 0,
                 ruleMeta.sensitivity(), objectType, "derived", false, meta.version());
         if (updated == 0) {
             throw new BizException(ErrorCode.PARAM_INVALID, "标签已被其他人修改，请刷新后重试");

@@ -1,16 +1,29 @@
 /* 标签画像平台 · 控制台共享核心 */
 /* ============================================================
  * 标签画像平台 · 管理控制台前端
- * 单页应用（hash 路由）；会话 Token 存 sessionStorage，经 X-Console-Token 头透传。
+ * 单页应用（hash 路由）；会话 Token 存 localStorage（跨标签页/浏览器重启保留，
+ * 服务端 TTL 72h + 活跃滑动续期），经 X-Console-Token 头透传。
  * ============================================================ */
   var TOKEN_KEY = 'tp_console_token';
   var USER_KEY = 'tp_console_user';
 
+  /* 读会话：优先 localStorage；老会话若只在 sessionStorage（升级前）则迁移过来 */
+  function readSession(key) {
+    var value = localStorage.getItem(key);
+    if (value) return value;
+    var legacy = sessionStorage.getItem(key);
+    if (legacy) {
+      localStorage.setItem(key, legacy);
+      sessionStorage.removeItem(key);
+    }
+    return legacy || '';
+  }
+
   var state = {
-    token: sessionStorage.getItem(TOKEN_KEY) || '',
-    user: JSON.parse(sessionStorage.getItem(USER_KEY) || 'null'),
+    token: readSession(TOKEN_KEY),
+    user: JSON.parse(readSession(USER_KEY) || 'null'),
     route: 'tags',
-    workTenant: sessionStorage.getItem('tp_work_tenant') || 'risk_control',
+    workTenant: localStorage.getItem('tp_work_tenant') || 'risk_control',
     permissions: [],
     menus: null
   };
@@ -19,7 +32,7 @@
     workbench: '打标工作台', 'my-tasks': '我的任务', tasks: '任务管理', 'task-monitor': '任务监控',
     dashboard: '数据看板', tags: '标签字典', 'tag-compose': '标签组合', 'tag-viewer': '标签查看', market: '标签市场', audit: '待审核队列', records: '打标记录',
     profile: '对象画像', tenants: '租户与凭证', users: '用户管理', roles: '角色与权限',
-    logs: '审计日志', docs: '接口文档'
+    logs: '审计日志', docs: '接口文档', monitor: '接入监控'
   };
 
   var PAGE_SUBTITLES = {
@@ -39,7 +52,8 @@
     users: '控制台账号、角色与密码管理',
     roles: '内置角色可访问的页面与操作矩阵（只读）',
     logs: '平台操作审计追溯',
-    docs: '开放 API 接入说明'
+    docs: '开放 API 接入说明',
+    monitor: 'Kafka 等写入通道的运行状态、未消费积压与死信'
   };
 
   var STATUS_BADGE = {
@@ -54,6 +68,7 @@
     success: ['badge-green', '成功'], failed: ['badge-red', '失败'],
     draft: ['badge-gray', '草稿'], published: ['badge-blue', '已发布'],
     in_progress: ['badge-blue', '进行中'], completed: ['badge-green', '已完成'],
+    verified: ['badge-purple', '已验收'],
     cancelled: ['badge-gray', '已取消'], pending: ['badge-orange', '待领取'],
     claimed: ['badge-blue', '已领取'], submitted: ['badge-orange', '待审核'],
     skipped: ['badge-gray', '已跳过'], pending_review: ['badge-orange', '待审核'],
@@ -151,10 +166,60 @@
     }).join('') + '</div>';
   }
 
+  /**
+   * 复制到剪贴板。
+   * Clipboard API 只在安全上下文（HTTPS / localhost）可用；测试环境是 http://内网IP，
+   * navigator.clipboard 为 undefined，必须回退到隐藏 textarea + execCommand 的传统方式，
+   * 两者都不可用时弹窗展示明文让用户手动 Ctrl+C，而不是只报一句「复制失败」。
+   */
   function copyText(text, okMessage) {
-    (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject())
-      .then(function () { toast(okMessage || '已复制到剪贴板', 'ok'); })
-      .catch(function () { toast('复制失败，请手动选择复制', 'err'); });
+    var value = (text === null || text === undefined) ? '' : String(text);
+    var ok = function () { toast(okMessage || '已复制到剪贴板', 'ok'); };
+    if (navigator.clipboard && navigator.clipboard.writeText && window.isSecureContext) {
+      navigator.clipboard.writeText(value).then(ok).catch(function () {
+        // 权限被拒（部分浏览器要求用户手势）时再走传统复制
+        if (legacyCopy(value)) { ok(); } else { showCopyFallback(value); }
+      });
+      return;
+    }
+    if (legacyCopy(value)) { ok(); } else { showCopyFallback(value); }
+  }
+
+  /** 传统复制：隐藏 textarea + execCommand('copy')，非安全上下文下依然可用 */
+  function legacyCopy(value) {
+    var ta = document.createElement('textarea');
+    ta.value = value;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '0';
+    ta.style.left = '-9999px';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    var copied = false;
+    try {
+      ta.focus();
+      ta.select();
+      ta.setSelectionRange(0, value.length);
+      copied = document.execCommand('copy');
+    } catch (e) {
+      copied = false;
+    }
+    document.body.removeChild(ta);
+    return copied;
+  }
+
+  /** 兜底弹窗：明文已选中，直接 Ctrl+C / ⌘+C 即可 */
+  function showCopyFallback(value) {
+    openModal('手动复制',
+      '<div class="field"><label>浏览器拒绝写入剪贴板，内容已选中，按 Ctrl+C（macOS 为 ⌘+C）复制</label>' +
+      '<textarea id="copy-fallback" class="mono" rows="3" readonly></textarea></div>',
+      [{ text: '关闭', cls: 'btn-ghost', onClick: closeModal }], 'sm');
+    var el = $('#copy-fallback');
+    if (el) {
+      el.value = value;
+      el.focus();
+      el.select();
+    }
   }
 
   function setBusy(btn, busy) {
@@ -205,22 +270,41 @@
     var headers = { 'Content-Type': 'application/json' };
     if (state.token) headers['X-Console-Token'] = state.token;
     if (isAdmin() && state.workTenant) headers['X-Console-Tenant'] = state.workTenant;
-    return fetch('/api/v1/console' + path, {
+    var fetchOpts = {
       method: options.method || 'GET',
       headers: headers,
       body: options.body ? JSON.stringify(options.body) : undefined
-    }).then(function (resp) {
-      return resp.json().catch(function () {
-        return { code: -1, message: 'HTTP ' + resp.status + '（响应非 JSON）' };
-      }).then(function (data) {
-        if (data.code === 0) return data.data;
-        // 会话失效 / 凭证错误：立即清理本地登录态
-        if (data.code === 1009 || data.code === 401 || data.code === 4002 || data.code === 4004) {
-          signOut(true);
+    };
+    // 可选超时：长耗时操作（如同步 latest）避免永远停在「执行中」
+    var controller = null, timer = null;
+    if (options.timeoutMs && typeof AbortController !== 'undefined') {
+      controller = new AbortController();
+      fetchOpts.signal = controller.signal;
+      timer = setTimeout(function () { controller.abort(); }, options.timeoutMs);
+    }
+    return fetch('/api/v1/console' + path, fetchOpts)
+      // 只兜住 fetch 本身的网络层失败（连接被拒、请求被取消、断网）。
+      // HTTP 4xx/5xx 不会走这里，仍由下面的 JSON 解析给出业务错误码。
+      .catch(function (e) {
+        if (e && e.name === 'AbortError') {
+          throw new Error('请求超时（超过 ' + Math.round(options.timeoutMs / 1000) +
+            ' 秒），服务可能仍在执行，请稍后刷新确认结果');
         }
-        throw new Error(data.message || ('请求失败 code=' + data.code));
-      });
-    });
+        throw new Error('网络连接中断或服务不可达，请检查网络后重试');
+      })
+      .then(function (resp) {
+        return resp.json().catch(function () {
+          return { code: -1, message: 'HTTP ' + resp.status + '（响应非 JSON）' };
+        }).then(function (data) {
+          if (data.code === 0) return data.data;
+          // 会话失效 / 凭证错误：立即清理本地登录态
+          if (data.code === 1009 || data.code === 401 || data.code === 4002 || data.code === 4004) {
+            signOut(true);
+          }
+          throw new Error(data.message || ('请求失败 code=' + data.code));
+        });
+      })
+      .finally(function () { if (timer) clearTimeout(timer); });
   }
 
   function qs(params) {
@@ -301,10 +385,91 @@
     $('#app-view').classList.remove('hidden');
     var name = state.user ? state.user.display_name || state.user.displayName : '';
     var role = state.user ? state.user.role : '';
-    $('#user-info').textContent = name + (role ? '（' + (ROLE_LABEL[role] || role) + '）' : '');
+    var roleText = role ? (ROLE_LABEL[role] || role) : '';
+    $('#user-info').textContent = name + (roleText ? '（' + roleText + '）' : '');
     $('#user-avatar').textContent = (name || '?').charAt(0).toUpperCase();
+    var initial = (name || '?').charAt(0).toUpperCase();
+    var lg = $('#user-avatar-lg');
+    if (lg) lg.textContent = initial;
+    var ddName = $('#user-dd-name');
+    if (ddName) ddName.textContent = name || '—';
+    var ddRole = $('#user-dd-role');
+    if (ddRole) ddRole.textContent = roleText || '—';
     applyNavPermissions();
+    bindHealthChip();
     if (!navBadgeLoaded) loadNavBadges();
+  }
+
+  // 顶部用户菜单：点击开合 / 点外部关闭 / ESC 关闭 / 选中菜单项后关闭
+  function setUserMenu(open) {
+    var dd = $('#user-dropdown');
+    var trigger = $('#user-trigger');
+    if (!dd || !trigger) return;
+    dd.classList.toggle('hidden', !open);
+    trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+    trigger.classList.toggle('is-open', open);
+  }
+
+  function bindUserMenu() {
+    var trigger = $('#user-trigger');
+    var dd = $('#user-dropdown');
+    if (!trigger || !dd) return;
+    trigger.addEventListener('click', function (e) {
+      e.stopPropagation();
+      setUserMenu(dd.classList.contains('hidden'));
+    });
+    dd.addEventListener('click', function (e) {
+      e.stopPropagation();
+      if (e.target.closest('.user-dd-item')) setUserMenu(false);
+    });
+    document.addEventListener('click', function () { setUserMenu(false); });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') setUserMenu(false);
+    });
+  }
+
+  // 顶栏健康徽章：每 30s 探测 /actuator/health —— UP 绿「服务正常」/ DOWN 红「服务异常」/ 不可达灰「连接中断」
+  var healthTimer = null;
+
+  function renderHealth(stateName) {
+    var chip = $('#sys-chip');
+    var text = $('#sys-chip-text');
+    if (!chip || !text) return;
+    chip.classList.remove('is-ok', 'is-bad', 'is-idle');
+    if (stateName === 'ok') {
+      chip.classList.add('is-ok');
+      text.textContent = '服务正常';
+      chip.title = '平台健康检查通过（每 30 秒自动检测）';
+    } else if (stateName === 'bad') {
+      chip.classList.add('is-bad');
+      text.textContent = '服务异常';
+      chip.title = '平台健康检查未通过（数据库/存储等依赖可能异常），请联系管理员';
+    } else {
+      chip.classList.add('is-idle');
+      text.textContent = '连接中断';
+      chip.title = '无法连接服务端，请检查网络或等待服务恢复';
+    }
+  }
+
+  function probeHealth() {
+    if (document.hidden) return;
+    var ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    var abortTimer = ctrl ? setTimeout(function () { ctrl.abort(); }, 5000) : null;
+    fetch('/actuator/health', { cache: 'no-store', signal: ctrl ? ctrl.signal : undefined })
+      .then(function (resp) {
+        if (!resp.ok) { renderHealth('bad'); return; }
+        resp.json().then(function (data) {
+          renderHealth(data && data.status === 'UP' ? 'ok' : 'bad');
+        }).catch(function () { renderHealth('idle'); });
+      })
+      .catch(function () { renderHealth('idle'); })
+      .finally(function () { if (abortTimer) clearTimeout(abortTimer); });
+  }
+
+  function bindHealthChip() {
+    if (healthTimer) return;
+    probeHealth();
+    healthTimer = setInterval(probeHealth, 30000);
   }
 
   function applyNavPermissions() {
@@ -335,8 +500,8 @@
   function signIn(token, user) {
     state.token = token;
     state.user = user;
-    sessionStorage.setItem(TOKEN_KEY, token);
-    sessionStorage.setItem(USER_KEY, JSON.stringify(user));
+    localStorage.setItem(TOKEN_KEY, token);
+    localStorage.setItem(USER_KEY, JSON.stringify(user));
   }
 
   var signOutHooks = [];
@@ -354,8 +519,8 @@
     navBadgeLoaded = false;
     navBadgeLoading = false;
     updateNavPending(0);
-    sessionStorage.removeItem(TOKEN_KEY);
-    sessionStorage.removeItem(USER_KEY);
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(USER_KEY);
     if (!silent) toast('已退出登录');
     showLogin();
   }
@@ -408,6 +573,7 @@
     $('#btn-logout').addEventListener('click', function () {
       api('/auth/logout', { method: 'POST' }).catch(function () {}).finally(function () { signOut(); });
     });
+    bindUserMenu();
     $('#modal-close').addEventListener('click', closeModal);
     $('#modal').addEventListener('click', function (e) { if (e.target === $('#modal')) closeModal(); });
   }
@@ -447,6 +613,9 @@
   function canManageTasks() {
     return canByPermission('op.task.manage', ['ADMIN', 'TENANT_ADMIN', 'TASK_MANAGER']);
   }
+  function canAcceptTasks() {
+    return canByPermission('op.task.accept', ['ADMIN', 'TENANT_ADMIN']);
+  }
   function canManageTagDefinitions() {
     return canByPermission('op.tag.manage', ['ADMIN', 'TENANT_ADMIN']);
   }
@@ -456,7 +625,7 @@
   }
   function setWorkTenant(tenant) {
     state.workTenant = tenant || 'risk_control';
-    sessionStorage.setItem('tp_work_tenant', state.workTenant);
+    localStorage.setItem('tp_work_tenant', state.workTenant);
   }
 
 
@@ -488,4 +657,4 @@
   }
 
 
-  export { TOKEN_KEY, USER_KEY, state, PAGE_TITLES, PAGE_SUBTITLES, STATUS_BADGE, ROLE_LABEL, ROLE_BADGE, PRIORITY_LABEL, PRIORITY_BADGE, $, esc, dash, badge, emptyState, tableWrap, tableLoading, STAT_ICONS, statIcon, statCards, copyText, setBusy, toastTimer, toast, openModal, closeModal, api, qs, loadPermissions, loadAppVersion, showLogin, navBadgeLoaded, navBadgeLoading, updateNavPending, markNavBadgeLoaded, loadNavBadges, showApp, applyNavPermissions, signIn, signOutHooks, onSignOut, signOut, bindLogin, isAdmin, isTenantAdmin, permissionsLoaded, can, canByPermission, canManageUsers, canViewAuditQueue, canViewAuditLogs, canViewTenants, canViewRoles, canTag, canReview, canManageTasks, canManageTagDefinitions, workTenantId, setWorkTenant, fillTenantSelect, fmtDt, parseJsonValue };
+  export { TOKEN_KEY, USER_KEY, state, PAGE_TITLES, PAGE_SUBTITLES, STATUS_BADGE, ROLE_LABEL, ROLE_BADGE, PRIORITY_LABEL, PRIORITY_BADGE, $, esc, dash, badge, emptyState, tableWrap, tableLoading, STAT_ICONS, statIcon, statCards, copyText, setBusy, toastTimer, toast, openModal, closeModal, api, qs, loadPermissions, loadAppVersion, showLogin, navBadgeLoaded, navBadgeLoading, updateNavPending, markNavBadgeLoaded, loadNavBadges, showApp, applyNavPermissions, signIn, signOutHooks, onSignOut, signOut, bindLogin, isAdmin, isTenantAdmin, permissionsLoaded, can, canByPermission, canManageUsers, canViewAuditQueue, canViewAuditLogs, canViewTenants, canViewRoles, canTag, canReview, canManageTasks, canAcceptTasks, canManageTagDefinitions, workTenantId, setWorkTenant, fillTenantSelect, fmtDt, parseJsonValue };

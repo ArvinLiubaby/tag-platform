@@ -1,6 +1,7 @@
 package com.tagplatform.workbench;
 
 import com.tagplatform.common.BizException;
+import com.tagplatform.common.ErrorCode;
 import com.tagplatform.common.RequestContext;
 import com.tagplatform.workbench.TaskModels.CreateRequest;
 import com.tagplatform.workbench.TaskModels.ExternalProgressItem;
@@ -57,7 +58,7 @@ class OpenTaskProgressIntegrationTest {
                 List.of("DRV98001", "DRV98002", "DRV98003"));
         long taskId = created.task().id();
 
-        OpenTaskPage page = taskService.openList(TENANT, "published", 1, 20);
+        OpenTaskPage page = taskService.openList(TENANT, "published", null, null, 1, 20);
         assertThat(page.total()).isGreaterThanOrEqualTo(1);
         assertThat(page.records()).anyMatch(v -> v.task().id() == taskId);
 
@@ -105,5 +106,33 @@ class OpenTaskProgressIntegrationTest {
         assertThatThrownBy(() -> taskService.openProgress("system_a", taskId,
                 new ExternalProgressRequest(List.of(new ExternalProgressItem("DRV98101", "completed", null))),
                 "AK_OTHER")).isInstanceOf(BizException.class);
+    }
+
+    @Test
+    void listWithMultiStatusFilter() {
+        TaskView a = createTask("多状态过滤A", false, List.of("DRV98201"));
+        TaskView b = createTask("多状态过滤B", false, List.of("DRV98202"));
+        long idA = a.task().id();
+        long idB = b.task().id();
+
+        // 多值：published,in_progress 一次查回（新发布任务均为 published）
+        OpenTaskPage multi = taskService.openList(TENANT, "published,in_progress", null, null, null, null, 1, 20);
+        assertThat(multi.records()).extracting(v -> v.task().id()).contains(idA, idB);
+
+        // 值两侧带空格 + 混入非法值仍按有效值过滤
+        OpenTaskPage spaced = taskService.openList(TENANT, " published , in_progress ,draft", null, null, null, null, 1, 20);
+        assertThat(spaced.records()).extracting(v -> v.task().id()).contains(idA, idB);
+
+        // 单值精确：in_progress 查不到刚发布的任务
+        OpenTaskPage inProgress = taskService.openList(TENANT, "in_progress", null, null, null, null, 1, 20);
+        assertThat(inProgress.records()).noneMatch(v -> v.task().id() == idA || v.task().id() == idB);
+
+        // 非法值 → 2002 fail-fast（白名单校验，大小写敏感）
+        assertThatThrownBy(() -> taskService.openList(TENANT, "PUBLISHED", null, null, null, null, 1, 20))
+                .isInstanceOfSatisfying(BizException.class,
+                        e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.PARAM_INVALID));
+        assertThatThrownBy(() -> taskService.openList(TENANT, "published,abc", null, null, null, null, 1, 20))
+                .isInstanceOfSatisfying(BizException.class,
+                        e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.PARAM_INVALID));
     }
 }

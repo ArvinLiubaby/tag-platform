@@ -26,10 +26,44 @@ public class OpenTaskController {
 
     @GetMapping("/tasks")
     public ApiResponse<TaskModels.OpenTaskPage> list(
+            @RequestParam(value = "task_id", required = false) Long taskId,
             @RequestParam(value = "status", required = false) String status,
+            @RequestParam(value = "operator_id", required = false) String operatorId,
+            @RequestParam(value = "object_type", required = false) String objectType,
+            @RequestParam(value = "object_id", required = false) String objectId,
             @RequestParam(value = "page", defaultValue = "1") int page,
             @RequestParam(value = "size", defaultValue = "20") int size) {
-        return ApiResponse.ok(taskService.openList(RequestContext.getTenantId(), status, page, size));
+        return ApiResponse.ok(taskService.openList(RequestContext.getTenantId(), status,
+                operatorId, objectType, objectId, taskId, page, size));
+    }
+
+    @GetMapping("/task-items")
+    public ApiResponse<TaskModels.OpenTaskItemPage> taskItems(
+            @RequestParam(value = "task_id", required = false) Long taskId,
+            @RequestParam(value = "operator_id", required = false) String operatorId,
+            @RequestParam(value = "object_id", required = false) String objectId,
+            @RequestParam(value = "status", required = false) String status,
+            @RequestParam(value = "page", defaultValue = "1") int page,
+            @RequestParam(value = "size", defaultValue = "50") int size,
+            @RequestParam(value = "include_values", defaultValue = "false") boolean includeValues) {
+        return ApiResponse.ok(taskService.openTaskItems(RequestContext.getTenantId(), taskId,
+                operatorId, objectId, status, page, size, includeValues));
+    }
+
+    /**
+     * 待打标清单：task_id 可选，按对象聚合返回「还缺哪些标签」。
+     * object_type / object_id 均支持逗号分隔多值：单类型多对象（driver & 123,324）或多类型按位置配对（driver,vehicle & 123,345）。
+     */
+    @GetMapping("/task-todos")
+    public ApiResponse<TaskModels.OpenTaskTodoPage> taskTodos(
+            @RequestParam(value = "task_id", required = false) Long taskId,
+            @RequestParam(value = "object_type", required = false) String objectType,
+            @RequestParam(value = "object_id", required = false) String objectId,
+            @RequestParam(value = "include_optional", defaultValue = "false") boolean includeOptional,
+            @RequestParam(value = "page", defaultValue = "1") int page,
+            @RequestParam(value = "size", defaultValue = "50") int size) {
+        return ApiResponse.ok(taskService.openTaskTodos(RequestContext.getTenantId(), taskId,
+                objectType, objectId, includeOptional, page, size));
     }
 
     @GetMapping("/tasks/{taskId}")

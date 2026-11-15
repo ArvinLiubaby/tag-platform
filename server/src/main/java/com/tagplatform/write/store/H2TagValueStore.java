@@ -8,8 +8,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 public class H2TagValueStore extends AbstractJdbcTagValueStore {
 
     private static final String UPSERT_SQL = "INSERT INTO tag_value_latest (" + COLUMNS + ") VALUES ("
-            + String.join(",", java.util.Collections.nCopies(25, "?")) + ") ON DUPLICATE KEY UPDATE "
-            + "tag_value = VALUES(tag_value), value_type = VALUES(value_type), status = VALUES(status), "
+            + String.join(",", java.util.Collections.nCopies(26, "?")) + ") ON DUPLICATE KEY UPDATE "
+            + "object_name = VALUES(object_name), tag_value = VALUES(tag_value), value_type = VALUES(value_type), status = VALUES(status), "
             + "biz_time = VALUES(biz_time), operate_time = VALUES(operate_time), expire_time = VALUES(expire_time), "
             + "operator_id = VALUES(operator_id), operator_name = VALUES(operator_name), "
             + "operator_type = VALUES(operator_type), operator_org = VALUES(operator_org), source = VALUES(source), "

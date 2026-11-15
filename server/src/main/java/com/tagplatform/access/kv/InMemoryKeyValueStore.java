@@ -62,4 +62,27 @@ public class InMemoryKeyValueStore implements KeyValueStore {
                         Long.parseLong(old.value()) + 1), old.expireAtMillis()));
         return Long.parseLong(entry.value());
     }
+
+    @Override
+    public Optional<Duration> remainingTtl(String key) {
+        Entry entry = map.get(key);
+        if (entry == null || entry.expired()) {
+            return Optional.empty();
+        }
+        return Optional.of(Duration.ofMillis(entry.expireAtMillis() - System.currentTimeMillis()));
+    }
+
+    @Override
+    public boolean expire(String key, Duration ttl) {
+        long expireAt = System.currentTimeMillis() + ttl.toMillis();
+        boolean[] updated = new boolean[1];
+        map.computeIfPresent(key, (k, old) -> {
+            if (old.expired()) {
+                return null;
+            }
+            updated[0] = true;
+            return new Entry(old.value(), expireAt);
+        });
+        return updated[0];
+    }
 }

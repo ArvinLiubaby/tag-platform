@@ -36,6 +36,7 @@ public record TagVersion(
             String tagName,
             String categoryCode,
             String valueType,
+            String unit,
             String valueRange,
             boolean valueMultiple,
             String tagType,
@@ -45,12 +46,16 @@ public record TagVersion(
             String sensitivity,
             String objectType,
             String sourceMode,
-            boolean writable) {
+            boolean writable,
+            String dim1Code,
+            String dim2Code,
+            Integer priority) {
 
         public static Definition from(TagMeta meta) {
-            return new Definition(meta.tagName(), meta.categoryCode(), meta.valueType(), meta.valueRange(),
-                    meta.valueMultiple(), meta.tagType(), meta.needValueAudit(), meta.valueTtlDays(),
-                    meta.tenantId(), meta.sensitivity(), meta.objectType(), meta.sourceMode(), meta.writable());
+            return new Definition(meta.tagName(), meta.categoryCode(), meta.valueType(), meta.unit(),
+                    meta.valueRange(), meta.valueMultiple(), meta.tagType(), meta.needValueAudit(),
+                    meta.valueTtlDays(), meta.tenantId(), meta.sensitivity(), meta.objectType(),
+                    meta.sourceMode(), meta.writable(), meta.dim1Code(), meta.dim2Code(), meta.priority());
         }
     }
 }

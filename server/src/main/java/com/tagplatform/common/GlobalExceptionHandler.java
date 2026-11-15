@@ -2,17 +2,21 @@ package com.tagplatform.common;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.servlet.NoHandlerFoundException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 /**
  * 全局异常处理器：把 Controller/Service 层抛出的异常统一收敛为 {code, message, request_id, data}。
  * - BizException：按 ErrorCode.httpStatus 返回（1xxx→401/403，2xxx/3xxx→200，频控→429，5xxx→500），data 原样透传
  * - 参数解析类异常：2xxx（PARAM_INVALID），HTTP 200
+ * - 路径不存在（含已下线端点）：HTTP 404 + code 404，提示「接口不存在或已下线」
  * - 其他异常：5001（SYSTEM_ERROR），HTTP 500，记录堆栈
  * 说明：过滤器（OpenApiAuthFilter/ConsoleApiAuthFilter）在进入 MVC 前自行输出统一错误响应，不经过本处理器。
  */
@@ -40,6 +44,17 @@ public class GlobalExceptionHandler {
         log.warn("参数异常 msg={} request_id={}", e.getMessage(), RequestContext.getRequestId());
         return ResponseEntity.status(ErrorCode.PARAM_INVALID.httpStatus())
                 .body(ApiResponse.fail(ErrorCode.PARAM_INVALID, e.getMessage()));
+    }
+
+    /**
+     * 不存在的路径（含已下线端点）：Spring Boot 3 会落到静态资源处理器并抛 NoResourceFoundException，
+     * 不能按 5001 系统内部错误处理，否则调用方无法区分「接口没了」和「服务故障」。统一返回 HTTP 404。
+     */
+    @ExceptionHandler({NoResourceFoundException.class, NoHandlerFoundException.class})
+    public ResponseEntity<ApiResponse<Object>> handleNotFound(Exception e) {
+        log.warn("接口不存在或已下线 msg={} request_id={}", e.getMessage(), RequestContext.getRequestId());
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(new ApiResponse<>(404, "接口不存在或已下线", RequestContext.getRequestId(), null));
     }
 
     @ExceptionHandler(Exception.class)

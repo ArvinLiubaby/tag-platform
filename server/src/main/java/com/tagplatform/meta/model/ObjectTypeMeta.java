@@ -1,7 +1,5 @@
 package com.tagplatform.meta.model;
 
-import java.util.regex.Pattern;
-
 /**
  * 对象类型注册表（object_type_meta 表映射）。
  */
@@ -18,11 +16,14 @@ public record ObjectTypeMeta(
         return "enabled".equalsIgnoreCase(status);
     }
 
-    /** 对象 ID 格式校验（未配置 pattern 时仅要求非空） */
-    public boolean idMatches(String objectId) {
-        if (objectId == null || objectId.isBlank()) {
-            return false;
-        }
-        return idPattern == null || idPattern.isBlank() || Pattern.matches(idPattern, objectId);
+    /**
+     * 对象 ID 是否可用：<b>只要求非空</b>。
+     *
+     * <p>2026-11-11 起取消格式校验——`id_pattern` 仅作为接入约定保留在元数据里（供文档与提示使用），
+     * 运行期不再用它拦截请求。上游的 driver_id / vehicle_id 等编码规则不统一（历史车牌、
+     * 外部系统编号、测试数据并存），强制正则只会把合法数据挡在门外。</p>
+     */
+    public boolean idPresent(String objectId) {
+        return objectId != null && !objectId.isBlank();
     }
 }

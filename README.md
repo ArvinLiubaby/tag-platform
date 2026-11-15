@@ -8,11 +8,11 @@
 
 不引入 Kafka / Flink / APISIX / Flowable / K8s（均绑定后续版本升级触发条件）。
 
-> **当前运行口径（2026-10-22）**：本地、测试与生产环境均只保留 32 个核心风控标签，全部归属 `risk_control`、状态 `online`、敏感级 L2、TTL=0、`need_value_audit=false`；非核心标签已归档（软删除，历史值与审计保留）。清单与变更说明见 [`docs/tag-catalog-1015.md`](./docs/tag-catalog-1015.md)。
+> **当前运行口径（2026-10-22）**：本地环境（本机 8081）、测试环境（test-host:8081）与生产环境（tag-platform-host:8080）均只保留 32 个核心风控标签，全部归属 `risk_control`、状态 `online`、敏感级 L2、TTL=0、`need_value_audit=false`；非核心标签已归档（软删除，历史值与审计保留）。清单与变更说明见 [`docs/tag-catalog-1015.md`](./docs/tag-catalog-1015.md)。
 >
 > **接口前缀（2026-10-22 起）**：统一为 `/api/v1/open`（开放 API）与 `/api/v1/console`（控制台接口）；旧前缀 `/open/v1`、`/console/api` 在兼容期内继续可用，计划下个主版本移除。
 >
-> **版本号**：应用版本由父 POM 统一管理（当前 `1.17.0`），构建时生成 build-info；控制台通过 `GET /api/v1/console/system/version` 自动显示，不在静态页面硬编码。每次发布按 SemVer 升级父 POM 与子模块 `<parent><version>`。
+> **版本号**：应用版本由父 POM 统一管理（当前 `1.22.11`），构建时生成 build-info；控制台通过 `GET /api/v1/console/system/version` 自动显示，不在静态页面硬编码。每次发布按 SemVer 升级父 POM 与子模块 `<parent><version>`。
 
 ---
 
@@ -115,6 +115,19 @@ demo 内置演示凭证：
 
 ### 3.1 本地环境（真实组件，8081）
 
+**一键启动（推荐）**：
+
+```bash
+./start-local.sh              # 容器自愈 → 启动应用 8081 → 健康校验，实测约 4s
+./start-local.sh status       # 查看容器 / 端口 / 应用状态
+./start-local.sh restart      # 重启应用
+./start-local.sh stop         # 停止应用（容器保留）
+BUILD=1 ./start-local.sh      # 先 ./build.sh clean package 再启动
+PORT=8082 ./start-local.sh    # 换端口
+```
+
+脚本内置两类本机故障的自愈：① Redis 随 Docker/主机重启掉线（自动 `docker start`）；② StarRocks 容器 Up 但 9030 不通——`fe/bin/fe.pid` 残留且 pid 被 BE 复用导致 FE 拒启动（自动清 pid + 重启 feservice）。应用日志追加 `server-prod.log`，pid 记录在 `server.pid`。
+
 本地联调使用真实 MySQL / Redis / StarRocks 容器，应用直跑 `8081`。配置**不使用独立 env 文件**，全部来自 `server/src/main/resources/application.yml` 默认值，端口由命令行覆盖：
 
 | 项 | 取值 |
@@ -162,7 +175,7 @@ STRING_TO_SIGN = METHOD + "\n" + PATH + "\n" + CANONICAL_QUERY + "\n" + RAW_BODY
 signature = hex(HMAC-SHA256(secret, STRING_TO_SIGN))
 ```
 
-- `PATH`：不含 query 的**编码后**路径（如 `/api/v1/open/objects/DRV%200001/profile`）
+- `PATH`：不含 query 的**编码后**路径（如 `/api/v1/open/objects/profiles`）
 - `CANONICAL_QUERY`：query 参数按 key 字典序、同 key 按 value 字典序，`k=v` 以 `&` 连接（URL 解码后的原值）
 - `RAW_BODY`：请求体原文（GET 为空串）
 
@@ -173,12 +186,13 @@ signature = hex(HMAC-SHA256(secret, STRING_TO_SIGN))
 | GET | `/api/v1/open/tags?category_code=` | 标签字典（仅本租户可见的在线标签） |
 | POST | `/api/v1/open/tag-values/write` | 批量写入（≤1000 条，整批受理，`biz_request_id` 幂等） |
 | POST | `/api/v1/open/tag-values/delete` | 批量作废 |
-| GET | `/api/v1/open/objects/{objectId}/profile?object_type=&include_pending=` | 对象画像（标签最新值） |
-| GET | `/api/v1/open/operators/{operatorId}/tag-records?page=&size=` | 操作员打标记录（分页） |
+| GET | `/api/v1/open/objects/profiles?object_type=&object_id=&include_empty=&tag_codes=` | 对象画像（唯一入口，单/多对象） |
+| GET | `/api/v1/open/tag-records?operator_id=&page=&size=` | 操作员打标记录（分页；旧路径式保留兼容） |
 
 写入语义：
 
 - 批内**全过才受理**（all-or-nothing）；`results` 逐条给出 `accepted / pending_audit / rejected`
+- **对象名称**：items[] 支持可选 `object_name`（姓名 / 车牌号 / 车队名等，≤256 字符），随流水落库用于展示与追溯；不参与对象主键、幂等判断与频控
 - **enum 单选/多选**：`tag_meta.value_multiple` 控制（默认单选）；多选值用英文逗号分隔（如 `公共道路,港口`），平台逐项校验、拒绝空项与重复值；`GET /api/v1/open/tags` 返回 `value_multiple` 与 `options` 供接入方渲染单选/多选控件
 - **多租户适用**：标签定义可共享给多个租户（`tag_meta.tenant_id` 逗号分隔，`PUBLIC`=全部租户）；开放 API 按凭证租户过滤，写入校验同样按适用租户判断；控制台编辑弹窗可多选租户
 - 平台**只追加打标流水**（`tag_value_history`）+ Outbox 事件；画像数据源 `tag_value_latest` 由**外部写入程序**维护，受理成功 ≠ 画像立即可查
@@ -277,7 +291,7 @@ OceanBase 4.x 不支持 MySQL 的 `GET_LOCK`，Flyway 的 MySQL 实现依赖命�
 
 ### 6.2 测试环境部署（Docker 基础设施 + systemd 应用）
 
-与本地环境一致：MySQL / Redis / StarRocks 跑容器，应用 `java -jar` 直跑，端口 `8081`；库表端口仅绑定 `127.0.0.1`。当前实例：`<test-host>`。
+与本地环境一致：MySQL / Redis / StarRocks 跑容器，应用 `java -jar` 直跑，端口 `8081`；库表端口仅绑定 `127.0.0.1`。当前实例：`test-host`。
 
 运行配置分散在三处：应用环境变量 `/etc/tag-platform-test/tag-platform-test.env`（`640 root:tagplatform`）、compose 变量 `/opt/tag-platform-test/.env.test`（`600 root:root`）与编排文件 `docker-compose.test.yml`；日志在 `/var/log/tag-platform-test/`。
 
@@ -319,8 +333,8 @@ HOST=<host> PORT=8081 ./deploy/smoke-test.sh      # PASS=29
 | 环境 | 应用配置 | 进程托管 | 组件形态 | 数据落盘 | 日志 |
 |---|---|---|---|---|---|
 | 本地 | `application.yml` 默认值（仅端口用命令行覆盖） | 手动 `java -jar` | `deploy/docker-compose.yml`（`tp-*` 容器） | 外接盘 `docker-volumes/` | `server-prod.log` |
-| 测试环境 | `/etc/tag-platform-test/tag-platform-test.env`（640） | `tag-platform-test.service` | `deploy/docker-compose.test.yml` + `.env.test`（600） | Docker 卷 `tag-platform-test_*` | `/var/log/tag-platform-test/` |
-| 生产环境 | `/etc/tag-platform/tag-platform.env`（640）+ `ob-migrate.env`（600） | `tag-platform.service` | OceanBase + StarRocks + 本机 Redis | 外部集群 | `/var/log/tag-platform/` |
+| 测试 `test-host` | `/etc/tag-platform-test/tag-platform-test.env`（640） | `tag-platform-test.service` | `deploy/docker-compose.test.yml` + `.env.test`（600） | Docker 卷 `tag-platform-test_*` | `/var/log/tag-platform-test/` |
+| 生产 `tag-platform-host` | `/etc/tag-platform/tag-platform.env`（640）+ `ob-migrate.env`（600） | `tag-platform.service` | OceanBase + StarRocks + 本机 Redis | 外部集群 | `/var/log/tag-platform/` |
 
 仓库内对应模板：`deploy/.env.example`（本地 compose）、`deploy/.env.test.example` + `deploy/test/tag-platform-test.env.example`（测试）、`deploy/prod/{tag-platform.env.example,ob-migrate.env.example,tag-platform.service}`（生产）。样例中所有 `CHANGE_ME` 均须替换，真实口令与主密钥只保留在部署机。
 
@@ -422,9 +436,3 @@ HOST=<host> PORT=8081 ./deploy/smoke-test.sh      # PASS=29
 当前版本 → V2（Kafka/批量画像/血缘）→ V3（Flink 实时/倒排圈选/订阅回调）→ V4（Iceberg 回流入湖/多语言 SDK/OceanBase/K8s）。
 
 扩展性不变式：契约先行（`/api/v1/open` 版本化、字段只增不删）、宽表全字段一次建齐（含 `ext_json/ver` 预留列）、Outbox 第一天落表、模块边界禁止跨模块访表、租户强制过滤、`request_id + operator_id` 全链路透传。
-
----
-
-## License
-
-本项目采用 [MIT License](./LICENSE) 开源。

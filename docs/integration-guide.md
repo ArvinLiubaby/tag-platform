@@ -32,9 +32,8 @@
 | 查看标签字典 | `GET /api/v1/open/tags` | 拉取可写标签清单、值域约束，驱动前端表单 |
 | 打标签（写入） | `POST /api/v1/open/tag-values/write` | 客服人工打标、算法批量回写 |
 | 撤销标签（作废） | `POST /api/v1/open/tag-values/delete` | 误标撤销、数据修正 |
-| 查对象画像 | `GET /api/v1/open/objects/{objectId}/profile` | 查询某对象当前标签值（latest） |
-| 查组合标签内容 | `GET /api/v1/open/objects/profile/combined` | 一次查询「司机+车辆」32 个特征值（含待打标占位，覆盖清单-1015） |
-| 查打标记录 | `GET /api/v1/open/operators/{operatorId}/tag-records` | 查询某操作员的打标流水（含审核状态） |
+| 查对象画像 | `GET /api/v1/open/objects/profiles` | 单/多对象画像（统一入口）：当前标签值、无值占位、精确取 32 个特征值 |
+| 查打标记录 | `GET /api/v1/open/tag-records?operator_id=` | 查询某操作员的打标流水（含审核状态） |
 
 接入方式二选一：
 
@@ -140,7 +139,7 @@ signature = hex_lower( HMAC_SHA256( key = secret, data = STRING_TO_SIGN 的 UTF-
 | 字段 | 取值规则 | 示例 |
 |---|---|---|
 | `METHOD` | 大写 HTTP 方法 | `GET` / `POST` |
-| `PATH` | **编码后**的路径（不含 query）。路径含动态段时，先对动态段做 URL 编码（空格编码为 `%20` 而非 `+`），服务端按收到的原始 URI 比对 | `/api/v1/open/objects/DRV%200001/profile` |
+| `PATH` | **编码后**的路径（不含 query）。路径含动态段时，先对动态段做 URL 编码（空格编码为 `%20` 而非 `+`），服务端按收到的原始 URI 比对 | `/api/v1/open/objects/profiles` |
 | `CANONICAL_QUERY` | query 参数按 **key 字典序**、同 key 按 **value 字典序** 排列，`k=v` 以 `&` 连接；**值为 URL 解码后的原值**；无参数为空串 | `category_code=risk_score&page=1` |
 | `RAW_BODY` | 请求体**原文**（需与 `-d` 发送的字节完全一致）；GET 为空串 | `{"biz_request_id":"biz-001","items":[…]}` |
 | `TIMESTAMP` | 与请求头 `X-Timestamp` 完全相同 | `1760430000000` |
@@ -187,10 +186,11 @@ def call(method: str, path: str, query: dict = None, body: dict = None):
         raise RuntimeError(f"[{result['code']}] {result['message']} (request_id={result['request_id']})")
     return result["data"]
 
-# 示例：查画像
-profile = call("GET", "/api/v1/open/objects/DRV00001/profile",
-               query={"object_type": "driver", "include_pending": "false"})
-print(profile)
+# 示例：查画像（统一入口，返回 {tenant_id, total, records[]}）
+profile = call("GET", "/api/v1/open/objects/profiles",
+               query={"object_type": "driver", "object_id": "DRV00001",
+                      "include_pending": "false"})
+print(profile["records"][0])
 ```
 
 > 要点：`requests` 会对 params 做 URL 编码，但**签名仍用原值**；若 query 值含中文/空格等，需自行确认服务端解码后原值与签名一致。
@@ -217,9 +217,9 @@ print(profile)
 | 1 | GET | `/api/v1/open/tags` | 标签字典（本租户可见的在线标签） | 天然幂等 |
 | 2 | POST | `/api/v1/open/tag-values/write` | 批量写入标签值（≤1000 条/批） | `biz_request_id` |
 | 3 | POST | `/api/v1/open/tag-values/delete` | 批量作废标签值（≤1000 条/批） | `biz_request_id` |
-| 4 | GET | `/api/v1/open/objects/{objectId}/profile` | 对象画像（标签最新值） | 天然幂等 |
-| 5 | GET | `/api/v1/open/objects/profile/combined` | 司机+车辆组合标签内容（32 特征值，含待打标占位） | 天然幂等 |
-| 6 | GET | `/api/v1/open/operators/{operatorId}/tag-records` | 操作员打标记录（分页） | 天然幂等 |
+| 4 | GET | `/api/v1/open/objects/profiles` | 对象画像（唯一入口）：单/多对象、空占位、精确取码 | 天然幂等 |
+| 5 | GET | `/api/v1/open/tag-records` | 操作员打标记录（分页；`operator_id` 走 query） | 天然幂等 |
+
 
 **统一响应结构**（所有接口，HTTP 状态码见第 7 章）：
 
@@ -255,20 +255,34 @@ print(profile)
   "code": 0, "message": "ok", "request_id": "…",
   "data": {
     "tags": [{
-      "tag_code": "risk_level", "tag_name": "风险等级", "category_code": "risk_score",
-      "value_type": "enum", "value_range": "{\"enum\":[\"low\",\"medium\",\"high\"]}",
-      "tag_type": "rule", "object_type": "driver,vehicle", "source_mode": "hybrid",
+      "tag_code": "driving_risk_attitude", "tag_name": "驾驶风险倾向", "category_code": "risk_attitude",
+      "dim1_code": "personality", "dim1_name": "性格特征",
+      "dim2_code": "risk_attitude", "dim2_name": "风险态度", "priority": 3, "dim1_priority": 1,
+      "value_type": "enum", "unit": null, "value_range": "{\"enum\":[\"保守\",\"中性\",\"激进\"]}",
+      "tag_type": "rule", "object_type": "driver", "source_mode": "hybrid",
       "need_value_audit": false, "writable": true, "value_ttl_days": 0,
-      "sensitivity": "L2", "status": "online", "version": 1
+      "sensitivity": "L2", "status": "online", "version": 7,
+      "ext": {
+        "show_screen": "主",
+        "hidden": "false",
+        "risk_priority": "3",
+        "script": "客服话术：“师傅，想跟您了解一下平时开车的习惯……”（完整话术较长，此处截断）",
+        "dim1_priority": "1"
+      }
     }],
-    "total": 6
+    "total": 35
   }
 }
 ```
 
 | 字段 | 说明 |
 |---|---|
+| `dim1_code` / `dim1_name` | 一级维度编码与**中文名称**（实时解析自维度字典，无需接入方自建映射）。编码枚举：`personality` 性格特征 / `driving_ops` 驾驶与运营习惯 / `service_interaction` 服务交互表现 / `operation_mode` 运营模式 / `baseline` 人员基础属性 |
+| `dim2_code` / `dim2_name` | 二级维度编码与**中文名称**；编码与 `category_code` 同值（如 `personality_trait`、`speeding`），便于按维度分组渲染 |
+| `priority` | 标签优先级（来源《标签体系清单》「人工打标签标签」列，数值越小越靠前）；`null` = 非人工打标标签（纯统计类） |
+| `dim1_priority` | 所属一级维度的展示优先级（数值，越小维度越靠前；与 `ext.dim1_priority` 同源）；未配置为 `null` |
 | `value_type` | `boolean` / `number` / `enum` / `string` / `date`，决定 `tag_value` 的传值格式 |
+| `unit` | 数值型统计指标的计量单位：`小时` / `天` / `次` / `公里` 等；文本、布尔、枚举类为 `null` |
 | `value_range` | JSON 文本：`{"min":0,"max":100}`（number）或 `{"enum":["low","medium","high"]}`（enum）；enum 必须配置枚举值 |
 | `value_multiple` | 仅 enum 生效：`false` 单选（默认），`true` 多选；多选写入用英文逗号分隔 |
 | `options` | enum 的允许值数组，供接入方直接渲染单选/多选控件；非 enum 为空数组 |
@@ -278,6 +292,22 @@ print(profile)
 | `writable` | 写入开关（默认 true）：`false` = 该标签**禁止写入**，POST 写入/作废时整批拒绝（`code = 3012`）；适合「仅统计/算法刷新」「只读展示」类标签 |
 | `value_ttl_days` | 值有效期（天），0 表示永不过期；过期后画像接口不再返回 |
 | `sensitivity` | L1 公开 / L2 内部 / L3 敏感 / L4 高敏 |
+| `version` | 标签定义版本号，每次修改定义 +1；对接方可用它判断本地缓存的字典是否过期 |
+| `derived` | 是否组合标签（查询期实时计算，不可写入） |
+| `updated_at` | 标签定义最近更新时间 |
+| `ext` | 租户级扩展信息（`key → value`，值统一为字符串）；未单独配置时返回属性默认值，未配置且无默认值则不出现。租户可自定义增减，接入方应忽略不认识的 key |
+
+**`ext` 内置属性**
+
+| key | 类型（字符串值） | 说明 |
+|---|---|---|
+| `show_screen` | `主` / `副` | 标签展示屏幕，默认 `副` |
+| `hidden` | `true` / `false` | 是否在客服侧隐藏，默认 `false` |
+| `script` | 文本 | 标签话术，可能较长（数百字），按需渲染，避免列表接口整段展示 |
+| `risk_priority` | 整数 | 标签风控展示优先级，数值越小越靠前；未配置则不出现 |
+| `dim1_priority` | 整数 | 所属一级维度的展示优先级，用于先按维度、再按 `priority` 排序；与顶层数值字段 `dim1_priority` 同源，此处以字符串承载 |
+
+> **渲染顺序建议**：先按 `dim1_priority` 排一级维度，再按 `priority`（标签优先级，可能为 null）排标签，最后用 `ext.risk_priority` 处理风控场景的特殊置顶；`ext.hidden=true` 的标签不展示，`ext.show_screen` 决定落在主屏还是副屏。
 
 > **多租户共享**：同一标签定义可以适用于多个租户（控制台维护适用租户列表，`PUBLIC`=全部租户）。接入方通过 `GET /api/v1/open/tags` 只能看到自己租户适用的标签；写入校验同样按适用租户判断。
 
@@ -292,15 +322,17 @@ print(profile)
 ```json
 {
   "biz_request_id": "biz-20261014-0001",
+  "task_id": 12,
   "items": [{
     "object_type": "driver",
     "object_id": "DRV00001",
-    "tag_code": "risk_level",
-    "tag_value": "high",
+    "object_name": "张伟",
+    "tag_code": "driving_risk_attitude",
+    "tag_value": "激进",
     "biz_time": "2026-10-14 10:00:00",
     "operate_time": "2026-10-14 10:00:05",
     "operator": { "operator_id": "OP1001", "operator_name": "张三",
-                  "operator_type": "human", "operator_org": "某交警支队" },
+                  "operator_type": "human", "operator_org": "客服中心" },
     "source": "客服工作台",
     "confidence": "高",
     "remark": "打标理由（敏感标签必填）",
@@ -316,8 +348,10 @@ print(profile)
 |---|---|---|
 | `biz_request_id` | 是 | 幂等键。接入方生成，全局唯一（建议 `业务-日期-序号`），**24 小时内重复提交回放首次响应** |
 | `items` | 是 | 数组，1~1000 条；**整批校验全过才受理**（任一条失败 → 整批拒绝，报错信息指明第几条及原因） |
+| `task_id` | 否 | 关联打标任务 ID；**不传 = 通用写入通道**，任意时间可推送、不受任务状态约束，也不影响任何任务进度。传入后进入任务作业通道，任务须为 `published/in_progress/reviewing`（**已验收拒绝写入**），写入结果自动推进任务项。任务为「全部对象」模式（`all_objects=true`）时，**不校验对象是否已在任务快照中**，新对象自动纳入任务项并参与进度统计 |
 | `object_type` | 是 | 已注册对象类型（见 [6.5](#65-对象类型与-id-规范)） |
 | `object_id` | 是 | 需符合该对象类型的 ID 格式 |
+| `object_name` | 否 | 对象名称（姓名 / 车牌号 / 车队名等），≤256 字符；仅用于展示与流水追溯，**不参与**对象主键、幂等判断与频控 |
 | `tag_code` | 是 | 必须为在线、对凭证租户可见的标签；写入开关 `writable=false` 的标签会整批拒绝（3012） |
 | `tag_value` | 是 | **一律传字符串**：boolean → `"true"/"false"`；number → `"12.5"`；enum → 枚举值（多选用英文逗号分隔，如 `"公共道路,港口"`）；date → `"2026-10-14"`；须通过 `value_range` 校验 |
 | `biz_time` | 否 | 业务时间 `yyyy-MM-dd HH:mm:ss`；缺省 = `operate_time` 缺省 = 服务端当前时间 |
@@ -329,6 +363,8 @@ print(profile)
 | `evidence_url` | 否 | ≤512 字符 |
 | `ext_json` | 否 | JSON 文本 ≤2048 字符（平台原样存储） |
 
+> **任务写入可分批（重要）**：带 `task_id` 时，**不要求一次推齐任务里的全部标签**。单次只推 1~N 个标签都受理：平台按「任务 + 对象」累计已写值，对象项先进入 `in_progress`；当任务的必填标签（`required=true`）全部写完后，才自动置为 `submitted`（需审核）或 `approved`。因此「客服逐个标签打、多次提交」和「一次批量推全部」都支持。给同一对象写多个标签时，放多条 `items`（`object_id` 相同、`tag_code` 不同）即可。
+
 **响应**（受理成功后，逐条给出结果）：
 
 ```json
@@ -339,7 +375,7 @@ print(profile)
     "total": 2, "accepted": 1, "pending_audit": 1,
     "results": [
       { "index": 0, "object_type": "driver", "object_id": "DRV00001",
-        "tag_code": "risk_level", "status": "accepted", "message": null },
+        "tag_code": "driving_risk_attitude", "status": "accepted", "message": null },
       { "index": 1, "object_type": "driver", "object_id": "DRV00001",
         "tag_code": "suspected_fraud", "status": "pending_audit", "message": "待人工审核后生效" }
     ]
@@ -372,105 +408,76 @@ print(profile)
 
 响应 `results[].status`：`revoked`（已记录作废流水）/ `not_found`（该对象+标签无打标流水）。
 
-### 5.4 对象画像
+### 5.4 对象画像（统一入口）
 
-`GET /api/v1/open/objects/{objectId}/profile`
+`GET /api/v1/open/objects/profiles`
 
-返回对象**当前全部标签值**（数据源为 `tag_value_latest`，由外部写入程序维护；平台查询时自动排除 `revoked` 与已过期值）。
+> 画像查询的**唯一入口**（v1.22.0 起）。原 `GET /objects/{objectId}/profile`（单对象画像）与
+> 迁移对照见本节末尾。
 
-**参数**
+一次读取一个或多个对象的当前标签画像：`object_type` / `object_id` 均支持逗号分隔多值，**按位置配对、不做笛卡尔积**。
 
-| 参数 | 位置 | 必填 | 说明 |
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `object_type` | 是 | 逗号分隔多值（`driver,vehicle`）；单类型多对象只传 1 个即可 |
+| `object_id` | 是 | 逗号分隔多值；**批量画像必须指定对象** |
+| `include_pending` | 否 | 默认 `false`，`true` 时附带待审核值 |
+| `include_empty` | 否 | **默认 `false`**；`true` 时按「可见在线标签中适用于该对象的标签」补全 `status=none` 空占位（占位也带 `unit`，组合标签无值同样占位）。需要占位清单时必须显式传 `true` |
+| `tag_codes` | 否 | 逗号分隔标签码，精确取码；当前值、空占位、组合标签都受同一份过滤约束 |
+
+```http
+GET /api/v1/open/objects/profiles?object_type=driver,driver,vehicle&object_id=DRV85001,DRV85002,苏A88801
+GET /api/v1/open/objects/profiles?object_type=driver&object_id=DRV85001&include_empty=true&tag_codes=risk_level,avg_daily_duration
+```
+
+| 场景 | object_type | object_id | 实际查询 |
 |---|---|---|---|
-| `objectId` | path | 是 | 对象 ID（签名使用编码后路径） |
-| `object_type` | query | 是 | 如 `driver` |
-| `include_pending` | query | 否 | 默认 `false`；`true` 时附带待审核值（`status=pending_audit`，建议仅内部页面展示用，勿参与自动决策） |
+| 同类型多对象 | `driver` | `DRV85001,DRV85002` | (driver,DRV85001)、(driver,DRV85002) |
+| 跨类型混合 | `driver,vehicle` | `DRV85001,苏A88801` | (driver,DRV85001)、(vehicle,苏A88801) |
 
-**响应**
+**响应**：`data` = `{ tenant_id, total, records[] }`。`records[]` 每项结构为 `{ tenant_id, object_type, object_id, tags[] }`，顺序与传入对象一致。默认只返回有值标签、无值对象返回 `tags: []`；`include_empty=true` 时追加 `status=none` 空占位。不分页，`total` = 去重后对象数。
 
 ```json
 {
-  "code": 0, "message": "ok", "request_id": "…",
+  "code": 0,
   "data": {
-    "tenant_id": "risk_control", "object_type": "driver", "object_id": "DRV00001",
-    "tags": [{
-      "tag_code": "risk_level", "tag_name": "风险等级", "tag_value": "high",
-      "value_type": "enum", "status": "effective",
-      "source_mode": "hybrid", "need_value_audit": false,
-      "biz_time": "2026-10-14 10:00:00", "operate_time": "2026-10-14 10:00:05",
-      "expire_time": null, "operator_id": "OP1001", "operator_name": "张三",
-      "operator_type": "human", "operator_org": "某交警支队",
-      "source": "客服工作台", "confidence": "高",
-      "remark": "…", "evidence_url": null
-    }]
+    "tenant_id": "risk_control", "total": 2,
+    "records": [
+      { "tenant_id": "risk_control", "object_type": "driver", "object_id": "DRV85001",
+        "tags": [{ "tag_code": "driver_relation", "tag_value": "第三方派遣",
+                   "value_type": "enum", "unit": null, "status": "effective" }] },
+      { "tenant_id": "risk_control", "object_type": "vehicle", "object_id": "苏A88801",
+        "tags": [{ "tag_code": "avg_daily_mileage", "tag_value": "112.7",
+                   "value_type": "number", "unit": "公里", "status": "effective" }] }
+    ]
   }
 }
 ```
 
-**使用建议**：`tag_value` 为字符串，请按字典接口的 `value_type` 做类型转换（如 `"12.5"` → double，`"true"` → boolean）。
-
-### 5.5 组合标签内容查询（司机+车辆）
-
-`GET /api/v1/open/objects/profile/combined`
-
-一次查询「司机 + 车辆」组合的标签当前值——数据齐全时即清单-1015 的 32 个特征值（driver 17 / vehicle 15），供客服工作台/风控系统按作业单元（司机+车辆）整体拉取。
-
-**参数**
-
-| 参数 | 位置 | 必填 | 说明 |
-|---|---|---|---|
-| `driver_id` | query | 否* | 司机对象 ID（如 `DRV85001`） |
-| `vehicle_plate` | query | 否* | 车辆标识（车牌号，如 `苏A88801`；省份简称 + 字母 + 5~6 位字母/数字，新能源如 `苏AD12345`） |
-| `include_pending` | query | 否 | 默认 `false`；`true` 时附带待审核值 |
-| `include_empty` | query | 否 | 默认 `true`：无值标签以 `status=none`、`tag_value=null` 占位（占位范围 = 可见在线标签中适用该对象的标签，可直接渲染「待打标清单」）；`false` 仅返回有值标签 |
-| `tag_codes` | query | 否 | 可选，逗号分隔的标签码；**省略或为空时不按标签过滤，默认返回该对象类型下的全部可见在线标签**；非空时仅返回这些标签（无值仍占位）。传清单-1015 的 32 个标签码可精确取 32 个特征值（driver 17 / vehicle 15） |
-
-- `driver_id` / `vehicle_plate` 至少传一个，均缺失返回 `code=2001`。
-- `vehicle_plate` 的取值为车牌号（非 VIN）；旧参数 `plate_no`、`vehicle_id` 均已废弃，不再接受。
-
-> 命名对应：写接口 `object_type=driver|vehicle` + `object_id`；查询接口 `driver_id` / `vehicle_plate`，与 `object_type_meta.id_field` 保持一致（`vehicle_plate` 的值即车牌号）。
-
-（省略 `tag_codes` 时默认返回本租户全部可见适配标签——默认场景还含种子风控标签，即“返回所有标签”；如需精确 32 个特征值请传清单 32 码。）
-
-**响应**
+`include_empty=true` 时，空占位形如：
 
 ```json
-{
-  "code": 0, "message": "ok", "request_id": "…",
-  "data": {
-    "tenant_id": "risk_control",
-    "driver": {
-      "object_type": "driver", "object_id": "DRV85001",
-      "tags": [
-        {"tag_code": "social_tendency", "tag_name": "社交倾向", "tag_value": "外向",
-         "value_type": "enum", "status": "effective", "source_mode": "hybrid", "need_value_audit": true},
-        {"tag_code": "stutter_flag", "tag_name": "是否结巴", "tag_value": null,
-         "value_type": "enum", "status": "none", "source_mode": "manual", "need_value_audit": true}
-      ]
-    },
-    "vehicle": {
-      "object_type": "vehicle", "object_id": "苏A88801",
-      "tags": [{"tag_code": "cargo_type", "tag_name": "货物类型", "tag_value": "普货",
-                "value_type": "enum", "status": "effective", "source_mode": "hybrid", "need_value_audit": false}]
-    },
-    "total": 32
-  }
-}
+{ "tag_code": "social_tendency", "tag_name": "社交倾向", "tag_value": null,
+  "value_type": "enum", "unit": null, "status": "none", "derived": false }
 ```
 
-**使用建议**：`status=none` 即该标签尚无值（尚未打标或已过期/作废）；结合 `source_mode`（`manual`/`hybrid` 需人工参与）可直接生成客服「待打标清单」。若只需清单-1015 的 32 个特征值，传 `tag_codes`（32 个标签码逗号拼接）即可精确圈定。
+`include_empty` 与 `tag_codes` 可叠加，用于「一次取多个对象的 32 个特征值、缺值给占位」。
 
-### 5.6 操作员打标记录
+**约束**：类型个数 > 1 且与 ID 个数不等 → 2002；参数缺失 → 2001；类型未注册 → 3003；ID 格式不符 → 2002。重复 (类型, ID) 自动去重，单次最多 20 个类型 / 200 个对象。
 
-`GET /api/v1/open/operators/{operatorId}/tag-records`
+**使用建议**：`tag_value` 为字符串，请按字典接口的 `value_type` 做类型转换（如 `"12.5"` → double、`"true"` → boolean）；数值型标签的展示单位取自 `unit`（小时 / 天 / 次 / 公里），非数值标签为 `null`。`status=none` 即该标签尚无值，结合 `source_mode`（`manual` / `hybrid` 需人工参与）可直接生成客服「待打标清单」；若只需清单-1015 的 32 个特征值，传 `tag_codes`（32 个码逗号拼接）精确圈定。
 
-按操作员分页查询打标流水（含审核状态与全链路 `request_id`）。
+### 5.5 操作员打标记录
+
+`GET /api/v1/open/tag-records`
+
+按操作员分页查询打标流水（含审核状态与全链路 `request_id`）。v1.22.0 起 `operator_id` 改为 **query 参数**：签名待签串的 PATH 是固定字符串，无需对动态段做 URL 编码，减少一类签名错误；旧路径式 `GET /operators/{operatorId}/tag-records` 保留兼容（响应结构一致），新接入建议统一用 query 式。
 
 **参数**
 
 | 参数 | 位置 | 必填 | 说明 |
 |---|---|---|---|
-| `operatorId` | path | 是 | 操作员 ID |
+| `operator_id` | query | 是 | 操作员 ID（写入时提交的 `operator.operator_id`） |
 | `object_type` / `object_id` / `tag_code` | query | 否 | 过滤条件 |
 | `from` / `to` | query | 否 | 按操作时间过滤，`yyyy-MM-dd HH:mm:ss` |
 | `page` | query | 否 | 页码，默认 1 |
@@ -483,6 +490,7 @@ print(profile)
   "code": 0, "message": "ok", "request_id": "…",
   "data": {
     "operator_id": "OP1001", "page": 1, "size": 20, "total": 42,
+    "units": {"avg_daily_duration": "小时"},
     "records": [{
       "tenant_id": "risk_control", "object_type": "driver", "object_id": "DRV00001",
       "tag_code": "suspected_fraud", "tag_value": "true", "value_type": "boolean",
@@ -524,7 +532,7 @@ print(profile)
 - 写入响应只表示**流水已记录**，画像何时可查取决于外部写入程序的同步时延；请勿以写入响应判断已生效
 - 敏感标签（`need_value_audit=true`）仍要求 `remark`，否则整批拒绝（3008）；写入后流水状态为 `pending_audit`
 - **平台值审核已停用**：控制台「待审核队列」仅只读展示，通过/驳回接口返回 `code=3013`；审核与状态流转由下游链路负责
-- 需要确认某条是否已同步，可查询 5.6 打标记录（流水）或 5.4/5.5 画像（最新值），二者可能出现短暂不一致
+- 需要确认某条是否已同步，可查询 5.5 打标记录（流水）或 5.4 画像（最新值），二者可能出现短暂不一致
 - 作废同样只追加流水，不直接修改 latest；重复作废依据流水幂等返回 `revoked`
 
 ### 6.1.1 历史数据与保留
@@ -596,7 +604,7 @@ print(profile)
 
 - **客服系统「待打标清单」**：`GET /api/v1/open/tags?object_type=driver&source_mode=manual`（或 `hybrid`）直接拉取需要人工参与的标签（32 个中 `manual` 6 个 / `hybrid` 17 个）
 - **「客服手工可调整」= 再次写入**：同对象同标签再次写入即在流水追加新记录，由下游写入程序更新 latest；客服修正统计值无需额外接口
-- **来源可追溯**：每次写入的 operator/source 均落打标流水，可用 `GET /api/v1/open/operators/{operatorId}/tag-records` 按客服工号回查
+- **来源可追溯**：每次写入的 operator/source 均落打标流水，可用 `GET /api/v1/open/tag-records?operator_id=` 按客服工号回查
 - 32 标签的维度分类、取值与敏感策略见 [`tag-catalog-1015.md`](./tag-catalog-1015.md)；演示数据由 `data/seed-fleet-tags.sh` 一键生成
 
 ### 6.8 写入开关（writable）
@@ -683,7 +691,9 @@ WriteResult result = client.write(WriteRequest.of("biz-20261014-0100", List.of(
 )));
 System.out.println("accepted=" + result.accepted() + ", pending=" + result.pendingAudit());
 
-// 3) 对象画像
+// 3) 对象画像（统一入口；单对象便捷方法内部同样走 /objects/profiles）
+ProfileBatchView batch = client.getProfiles(
+        "driver,vehicle", "DRV00001,苏A88801", false, true, null);
 ProfileView profile = client.getProfile("driver", "DRV00001", false);
 
 // 4) 操作员打标记录（分页 + 过滤）
@@ -732,10 +742,10 @@ BODY='{"biz_request_id":"biz-workbench-20261014-0001","items":[{"object_type":"d
 #    平台只追加 tag_value_history + Outbox，tag_value_latest 由外部写入程序同步
 
 # ③ 查询打标流水，确认受理结果与 effective 状态
-#    GET /api/v1/open/operators/OP1001/tag-records?object_type=driver&page=1&size=10
+#    GET /api/v1/open/tag-records?object_type=driver&operator_id=OP1001&page=1&size=10
 
 # ④ 风控系统查询画像（外部写入程序同步 latest 后可见）
-#    GET /api/v1/open/objects/DRV00001/profile?object_type=driver&include_pending=false
+#    GET /api/v1/open/objects/profiles?object_type=driver&object_id=DRV00001&include_pending=false
 ```
 
 > 步骤 ② 的完整可执行脚本：将第 2 章模板的 `PATH_` 改为 `/api/v1/open/tag-values/write`、`METHOD` 改为 `POST`、`BODY` 设为上述 JSON（注意签名串中的 `BODY` 与 `-d` 发送内容必须一字不差），`QUERY=""` 即可。
@@ -751,7 +761,7 @@ BODY='{"biz_request_id":"biz-workbench-20261014-0001","items":[{"object_type":"d
 不会。整批校验（all-or-nothing），任一条不合格整批拒绝并指明第几条；请修复后整批重提（可用相同或新的 `biz_request_id`）。
 
 **Q3：如何知道待审核的值被通过了？**
-两种方式：① 轮询 5.6 打标记录看 `status`；② 与风控团队约定线下通知。平台后续版本会提供订阅回调。
+两种方式：① 轮询 5.5 打标记录看 `status`；② 与风控团队约定线下通知。平台后续版本会提供订阅回调。
 
 **Q4：同一个对象可以有多少标签？**
 无特殊限制；但重复写入同一（对象，标签）会覆盖旧值（旧值留流水），且受"同对象同标签 1 QPS"频控。

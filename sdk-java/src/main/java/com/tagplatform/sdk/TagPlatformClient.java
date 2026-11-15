@@ -115,51 +115,58 @@ public class TagPlatformClient {
         return call("POST", "/api/v1/open/tag-values/delete", Map.of(), request, WriteResult.class);
     }
 
-    /** GET /api/v1/open/objects/{objectId}/profile 对象画像 */
+    /**
+     * 单对象画像（便捷方法，内部走统一入口 GET /api/v1/open/objects/profiles）。
+     * 原 /objects/{objectId}/profile 端点已于 v1.22.0 下线；只查一个对象时也可直接用 getProfiles。
+     */
     public ProfileView getProfile(String objectType, String objectId, boolean includePending) {
+        ProfileBatchView batch = getProfiles(objectType, objectId, includePending, false, null);
+        List<ProfileView> records = batch == null || batch.records() == null ? List.of() : batch.records();
+        return records.isEmpty()
+                ? new ProfileView(null, objectType, objectId, List.of())
+                : records.get(0);
+    }
+
+    /** GET /api/v1/open/objects/profiles 批量对象画像（默认只返回有值标签、不含待审值） */
+    public ProfileBatchView getProfiles(String objectType, String objectId) {
+        return getProfiles(objectType, objectId, false, false, null);
+    }
+
+    /**
+     * 批量对象画像（画像查询统一入口）：object_type / object_id 逗号分隔多值，按位置配对、不做笛卡尔积；
+     * 只查一种类型时 object_type 只传 1 个即可配多个 ID。
+     * include_empty=true 时无值标签以 status=none 占位；tagCodes 非空时精确取指定标签码
+     * （可精确取「清单-1015」的 32 个特征值），占位与组合标签同样受该过滤约束。
+     */
+    public ProfileBatchView getProfiles(String objectType, String objectId,
+                                        boolean includePending, boolean includeEmpty,
+                                        Collection<String> tagCodes) {
         Map<String, List<String>> query = new LinkedHashMap<>();
         putIfPresent(query, "object_type", objectType);
-        query.put("include_pending", List.of(String.valueOf(includePending)));
-        return call("GET", "/api/v1/open/objects/" + pathSegment(objectId) + "/profile", query, null, ProfileView.class);
-    }
-
-    /** GET /api/v1/open/objects/profile/combined 司机+车辆组合标签内容（默认含无值占位、不含待审值） */
-    public CombinedProfileView getCombinedProfile(String driverId, String vehiclePlate) {
-        return getCombinedProfile(driverId, vehiclePlate, false, true);
-    }
-
-    /** 组合标签内容查询（driverId / vehiclePlate 至少传一个）；includeEmpty=true 时无值标签以 status=none 占位 */
-    public CombinedProfileView getCombinedProfile(String driverId, String vehiclePlate,
-                                                  boolean includePending, boolean includeEmpty) {
-        return getCombinedProfile(driverId, vehiclePlate, includePending, includeEmpty, null);
-    }
-
-    /** 组合标签内容查询（tagCodes 非空时仅返回这些标签，可精确取「清单-1015」的 32 个特征值） */
-    public CombinedProfileView getCombinedProfile(String driverId, String vehiclePlate,
-                                                  boolean includePending, boolean includeEmpty,
-                                                  Collection<String> tagCodes) {
-        Map<String, List<String>> query = new LinkedHashMap<>();
-        putIfPresent(query, "driver_id", driverId);
-        putIfPresent(query, "vehicle_plate", vehiclePlate);
+        putIfPresent(query, "object_id", objectId);
         query.put("include_pending", List.of(String.valueOf(includePending)));
         query.put("include_empty", List.of(String.valueOf(includeEmpty)));
         if (tagCodes != null && !tagCodes.isEmpty()) {
             query.put("tag_codes", List.of(String.join(",", tagCodes)));
         }
-        return call("GET", "/api/v1/open/objects/profile/combined", query, null, CombinedProfileView.class);
+        return call("GET", "/api/v1/open/objects/profiles", query, null, ProfileBatchView.class);
     }
 
-    /** GET /api/v1/open/operators/{operatorId}/tag-records 操作员打标记录 */
+    /**
+     * GET /api/v1/open/tag-records 操作员打标记录（推荐入口，operator_id 走 query 参数）。
+     * v1.22.0 起内部改走 query 式端点，PATH 为固定字符串、无动态段编码；
+     * 旧路径式 /operators/{operatorId}/tag-records 服务端保留兼容，响应结构一致。
+     */
     public OperatorRecordsView getOperatorRecords(String operatorId, Map<String, String> filters,
                                                   int page, int size) {
         Map<String, List<String>> query = new LinkedHashMap<>();
         if (filters != null) {
             filters.forEach((k, v) -> putIfPresent(query, k, v));
         }
+        putIfPresent(query, "operator_id", operatorId);
         query.put("page", List.of(String.valueOf(page)));
         query.put("size", List.of(String.valueOf(size)));
-        return call("GET", "/api/v1/open/operators/" + pathSegment(operatorId) + "/tag-records", query, null,
-                OperatorRecordsView.class);
+        return call("GET", "/api/v1/open/tag-records", query, null, OperatorRecordsView.class);
     }
 
     // ------------------------------------------------------------ 核心调用
@@ -261,11 +268,6 @@ public class TagPlatformClient {
         if (value != null && !value.isBlank()) {
             query.put(key, List.of(value));
         }
-    }
-
-    /** path 动态段编码（服务端 getRequestURI() 为编码后原样值，签名需与之一致） */
-    private static String pathSegment(String value) {
-        return java.net.URLEncoder.encode(value, StandardCharsets.UTF_8).replace("+", "%20");
     }
 
     private static String brief(String text) {
@@ -499,15 +501,11 @@ public class TagPlatformClient {
             List<TagValueDto> tags) {
     }
 
-    /** 司机+车辆组合标签内容（GET /api/v1/open/objects/profile/combined） */
-    public record CombinedProfileView(
+    /** 批量对象画像（GET /api/v1/open/objects/profiles）：records 每项与 ProfileView 结构一致 */
+    public record ProfileBatchView(
             String tenantId,
-            ProfileSection driver,
-            ProfileSection vehicle,
-            int total) {
-
-        public record ProfileSection(String objectType, String objectId, List<TagValueDto> tags) {
-        }
+            int total,
+            List<ProfileView> records) {
     }
 
     /** 操作员打标记录页 */

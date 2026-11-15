@@ -13,7 +13,8 @@ public record AppProperties(
         @DefaultValue("starrocks") String store,
         @DefaultValue StarRocks starrocks,
         @DefaultValue Limits limits,
-        @DefaultValue Console console) {
+        @DefaultValue Console console,
+        @DefaultValue Kafka kafka) {
 
     /** 可逆加密主密钥（生产必须通过环境变量 TAG_PLATFORM_MASTER_KEY 覆盖） */
     public record Crypto(@DefaultValue("tag-platform-demo-master-key-0123456789") String masterKey) {
@@ -37,7 +38,21 @@ public record AppProperties(
     }
 
     /** 控制台会话 */
-    public record Console(@DefaultValue("8") long tokenTtlHours) {
+    public record Console(@DefaultValue("72") long tokenTtlHours) {
+    }
+
+    /**
+     * Kafka 标签写入通道：消息体与开放 API 的 WriteRequest 同构（可额外带 tenant_id / app_key）。
+     * enabled=false 时不装配任何 Kafka Bean，无 broker 的环境也能正常启动。
+     */
+    public record Kafka(@DefaultValue("false") boolean enabled,
+                        @DefaultValue("") String bootstrapServers,
+                        @DefaultValue("profile_tag_write") String topic,
+                        @DefaultValue("tag-platform-write") String groupId,
+                        @DefaultValue("profile_tag_write_dlq") String dlqTopic,
+                        @DefaultValue("") String defaultTenant,
+                        @DefaultValue("1") int concurrency,
+                        @DefaultValue("50") int maxPollRecords) {
     }
 
     /** demo 形态判断（内存 KV / H2 存储） */

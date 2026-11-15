@@ -17,7 +17,8 @@ import java.util.HexFormat;
 import java.util.Optional;
 
 /**
- * 控制台会话服务：登录签发 Token（KV 存储，TTL 8h）、校验、登出、密码渐进升级（plain: → pbkdf2）。
+ * 控制台会话服务：登录签发 Token（KV 存储，TTL 默认 72h，活跃时滑动续期）、校验、登出、
+ * 密码渐进升级（plain: → pbkdf2）。
  */
 @Service
 public class ConsoleSessionService {
@@ -74,8 +75,22 @@ public class ConsoleSessionService {
         if (token == null || token.isBlank()) {
             return Optional.empty();
         }
-        return kv.get(TOKEN_KEY_PREFIX + token).flatMap(this::fromJson)
-                .filter(session -> session.version() == currentAuthVersion(session.username()));
+        Optional<ConsoleSession> session = kv.get(TOKEN_KEY_PREFIX + token).flatMap(this::fromJson)
+                .filter(s -> s.version() == currentAuthVersion(s.username()));
+        session.ifPresent(s -> renewIfHalfExpired(TOKEN_KEY_PREFIX + token));
+        return session;
+    }
+
+    /**
+     * 滑动续期：剩余存活时间不足 TTL 一半时，把会话重新延长到完整 TTL。
+     * 活跃用户因此不会因为「隔夜」或「发版重启」被踢出登录。
+     */
+    private void renewIfHalfExpired(String key) {
+        Duration ttl = Duration.ofHours(props.console().tokenTtlHours());
+        Optional<Duration> remaining = kv.remainingTtl(key);
+        if (remaining.isPresent() && remaining.get().toMillis() < ttl.toMillis() / 2) {
+            kv.expire(key, ttl);
+        }
     }
 
     /** 使该用户已签发的全部会话失效（下次请求将被要求重新登录） */

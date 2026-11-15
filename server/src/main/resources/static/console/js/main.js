@@ -1,12 +1,13 @@
 /* 标签画像平台 · 控制台路由入口 */
 import * as core from './core.js';
 import './ui.js';
-import { renderTags } from './pages/tags.js';
+import { renderTags } from './pages/tags.js?v=20261111-4';
+import { renderMonitor } from './pages/monitor.js?v=20261111-3';
 import { renderAudit, renderTenants, renderLogs, renderUsers, renderRoles, openChangeOwnPassword } from './pages/governance.js';
-import { renderRecords, renderProfile, renderDocs, renderDashboard, stopDashboard } from './pages/analytics.js';
+import { renderRecords, renderProfile, renderDocs, renderDashboard, stopDashboard } from './pages/analytics.js?v=20261113-1';
 import { renderMarket } from './pages/market.js';
 import { renderCompose } from './pages/compose.js';
-import { renderTagViewer } from './pages/tagviewer.js';
+import { renderTagViewer } from './pages/tagviewer.js?v=20261111-1';
 import { renderWorkbench } from './pages/workbench.js';
 import { renderMyTasks, renderTasks, renderTaskMonitor } from './pages/tasks.js';
 
@@ -17,7 +18,7 @@ const { $, state, PAGE_TITLES, PAGE_SUBTITLES, bindLogin, loadAppVersion, loadPe
     workbench: renderWorkbench, 'my-tasks': renderMyTasks, tasks: renderTasks,
     'task-monitor': renderTaskMonitor,
     dashboard: renderDashboard, tags: renderTags, 'tag-compose': renderCompose, 'tag-viewer': renderTagViewer, market: renderMarket, audit: renderAudit, records: renderRecords,
-    profile: renderProfile, tenants: renderTenants, users: renderUsers, roles: renderRoles,
+    profile: renderProfile, monitor: renderMonitor, tenants: renderTenants, users: renderUsers, roles: renderRoles,
     logs: renderLogs, docs: renderDocs
   };
 
@@ -54,7 +55,7 @@ const { $, state, PAGE_TITLES, PAGE_SUBTITLES, bindLogin, loadAppVersion, loadPe
       // 会话恢复：校验 Token 有效性
       api('/auth/me').then(function (me) {
         state.user = me;
-        sessionStorage.setItem(USER_KEY, JSON.stringify(me));
+        localStorage.setItem(USER_KEY, JSON.stringify(me));
         return loadPermissions();
       }).then(function () {
         route();

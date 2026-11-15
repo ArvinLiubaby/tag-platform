@@ -43,7 +43,7 @@ class SignatureVerifierTest {
 
     @Test
     void canonicalQuerySortsKeysAndValues() {
-        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/v1/open/objects/x/profile");
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/v1/open/objects/profiles");
         request.addParameter("object_type", "driver");
         request.addParameter("include_pending", "true");
         assertThat(SignatureVerifier.canonicalQuery(request))

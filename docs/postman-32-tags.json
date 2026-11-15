@@ -1,7 +1,7 @@
 {
   "info": {
-    "name": "标签画像采集平台 · 标签查询（司机 + 车辆）",
-    "description": "组合查询接口：一次返回司机 + 车辆的标签当前值。签名由集合级 Pre-request Script 自动生成（HMAC-SHA256），变量可在集合 Variables 中修改。\n\n参数说明：\n- vehicle_plate：车辆标识（车牌号，如 苏A88801；普通 7 位 / 新能源 8 位），不再使用 VIN；旧参数 plate_no / vehicle_id 已废弃\n- tag_codes：可选；不传（或参数取消勾选）时返回该对象类型下的全部标签\n\n演示数据：车辆车牌范围 苏A88801 – 苏A88806；查询 苏A88888 格式合法但无数据，会返回全量 status=none 占位。\n\n使用前确认：\n1. 服务已启动（默认 8080 demo 实例）\n2. baseUrl / appKey / secret 与服务端租户凭证一致\n\n注意：每次发送都会生成新的 timestamp/nonce，可直接重复点击 Send。",
+    "name": "标签画像采集平台 · 对象画像查询（统一入口）",
+    "description": "GET /api/v1/open/objects/profiles：一次返回司机 + 车辆的标签当前值。签名由集合级 Pre-request Script 自动生成（HMAC-SHA256），变量可在集合 Variables 中修改。\n\n参数说明：\n- object_type / object_id：逗号分隔、按位置配对（driver,vehicle + 司机ID,车牌号）；车牌号如 苏A88801（普通 7 位 / 新能源 8 位），非 VIN\n- include_empty：true 时无值标签以 status=none 占位\n- tag_codes：可选；不传（或参数取消勾选）时返回该对象类型下的全部标签\n\n演示数据：车辆车牌范围 苏A88801 – 苏A88806；查询 苏A88888 格式合法但无数据，会返回全量 status=none 占位。\n\n使用前确认：\n1. 服务已启动（默认 8080 demo 实例）\n2. baseUrl / appKey / secret 与服务端租户凭证一致\n\n注意：每次发送都会生成新的 timestamp/nonce，可直接重复点击 Send。",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "event": [
@@ -62,18 +62,18 @@
         "method": "GET",
         "header": [],
         "url": {
-          "raw": "{{baseUrl}}/api/v1/open/objects/profile/combined?driver_id={{driverId}}&vehicle_plate={{vehiclePlate}}&include_empty=true",
+          "raw": "{{baseUrl}}/api/v1/open/objects/profiles?object_type=driver,vehicle&object_id={{driverId}},{{vehiclePlate}}&include_empty=true",
           "host": ["{{baseUrl}}"],
-          "path": ["api", "v1", "open", "objects", "profile", "combined"],
+          "path": ["api", "v1", "open", "objects", "profiles"],
           "query": [
-            { "key": "driver_id", "value": "{{driverId}}" },
-            { "key": "vehicle_plate", "value": "{{vehiclePlate}}" },
+            { "key": "object_type", "value": "driver,vehicle" },
+            { "key": "object_id", "value": "{{driverId}},{{vehiclePlate}}" },
             { "key": "tag_codes", "value": "{{tagCodes}}", "disabled": true },
             { "key": "include_empty", "value": "true" },
             { "key": "include_pending", "value": "false", "disabled": true }
           ]
         },
-        "description": "默认场景：tag_codes 不勾选（不发送），返回该对象类型下的全部可见在线标签。\n\nvehicle_plate 传车牌号（如 苏A88801），不再是 VIN。\n\n常用调整：\n- 只看有值标签：include_empty 改为 false\n- 包含待审核值：启用 include_pending 参数（默认 false）\n- 只查司机或只查车辆：删除另一个参数（至少保留一个）"
+        "description": "默认场景：tag_codes 不勾选（不发送），返回该对象类型下的全部可见在线标签。\n\nobject_id 中车牌号如 苏A88801（非 VIN）；object_type 与 object_id 按位置一一配对。\n\n常用调整：\n- 只看有值标签：include_empty 改为 false\n- 包含待审核值：启用 include_pending 参数（默认 false）\n- 只查司机或只查车辆：object_type / object_id 同时删掉对应那一项"
       }
     },
     {
@@ -82,12 +82,12 @@
         "method": "GET",
         "header": [],
         "url": {
-          "raw": "{{baseUrl}}/api/v1/open/objects/profile/combined?driver_id={{driverId}}&vehicle_plate={{vehiclePlate}}&tag_codes={{tagCodes}}&include_empty=true",
+          "raw": "{{baseUrl}}/api/v1/open/objects/profiles?object_type=driver,vehicle&object_id={{driverId}},{{vehiclePlate}}&tag_codes={{tagCodes}}&include_empty=true",
           "host": ["{{baseUrl}}"],
-          "path": ["api", "v1", "open", "objects", "profile", "combined"],
+          "path": ["api", "v1", "open", "objects", "profiles"],
           "query": [
-            { "key": "driver_id", "value": "{{driverId}}" },
-            { "key": "vehicle_plate", "value": "{{vehiclePlate}}" },
+            { "key": "object_type", "value": "driver,vehicle" },
+            { "key": "object_id", "value": "{{driverId}},{{vehiclePlate}}" },
             { "key": "tag_codes", "value": "{{tagCodes}}" },
             { "key": "include_empty", "value": "true" },
             { "key": "include_pending", "value": "false", "disabled": true }

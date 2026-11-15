@@ -10,6 +10,7 @@ import java.util.List;
  */
 public record TagLatestPage(
         String tagCode,
+        String unit,
         boolean derived,
         long total,
         int evaluated,

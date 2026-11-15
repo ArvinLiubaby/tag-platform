@@ -48,7 +48,26 @@ public class StarRocksSchemaInitializer implements ApplicationRunner {
                         + firstLine(stmt), e);
             }
         }
+        // CREATE TABLE IF NOT EXISTS 不会给存量表加列：逐列校验并补齐（StarRocks 轻量 schema change）
+        ensureColumn("tag_value_latest", "object_name",
+                "VARCHAR(256) NULL COMMENT '对象名称（冗余展示：姓名/车牌/车队名等，可选）'");
+        ensureColumn("tag_value_history", "object_name",
+                "VARCHAR(256) NULL COMMENT '对象名称（冗余展示：姓名/车牌/车队名等，可选）'");
         log.info("StarRocks 标签值表校验完成，执行语句数={}", executed);
+    }
+
+    /** 列不存在时补列；存在则跳过，可重复启动 */
+    private void ensureColumn(String table, String column, String definition) {
+        try {
+            boolean exists = !starrocksJdbcTemplate.queryForList(
+                    "SHOW COLUMNS FROM " + table + " LIKE '" + column + "'").isEmpty();
+            if (!exists) {
+                starrocksJdbcTemplate.execute("ALTER TABLE " + table + " ADD COLUMN " + column + " " + definition);
+                log.info("StarRocks 补列 {}.{}", table, column);
+            }
+        } catch (Exception e) {
+            throw new IllegalStateException("StarRocks 补列失败 " + table + "." + column, e);
+        }
     }
 
     /** 去掉 -- 行注释与首尾空白 */

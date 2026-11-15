@@ -14,7 +14,7 @@ info:
     signature = hex(HMAC-SHA256(secret, STRING_TO_SIGN))
     ```
 
-    - `PATH`：不含 query 的**编码后**路径（如 `/api/v1/open/objects/DRV%200001/profile`）
+    - `PATH`：不含 query 的**编码后**路径（如 `/api/v1/open/objects/profiles`）
     - `CANONICAL_QUERY`：key 字典序、同 key value 字典序，`k=v` 以 `&` 连接（URL 解码后的原值）
     - `RAW_BODY`：请求体原文（GET 为空串）
 
@@ -158,27 +158,47 @@ paths:
         '429':
           $ref: '#/components/responses/FrequencyLimited'
 
-  /api/v1/open/objects/{objectId}/profile:
+  /api/v1/open/objects/profiles:
     get:
       tags: [query]
-      summary: 对象画像
+      summary: 对象画像（统一入口，单/多对象）
       description: |
-        返回对象全部标签最新值（数据源 `tag_value_latest`，由外部写入程序维护）。已排除 `revoked` 与已过期值；
-        `include_pending=true` 时包含待审核值（不参与对外决策时建议保持 false）。
+        画像查询的唯一入口：一次读取一个或多个对象的当前标签画像；
+        object_type / object_id 逗号分隔多值，按位置配对、不做笛卡尔积。
+        `include_empty` 默认 false，需要无值占位时显式传 true；`total` 表示对象数（records 条数）。
+        `object_type` / `object_id` 均支持逗号分隔多值，按位置配对、不做笛卡尔积：
+        单类型多对象可只传 1 个 object_type 配多个 object_id（driver + 123,324）；
+        多类型时两者个数必须相同（driver,vehicle + 123,345 = (driver,123)、(vehicle,345)）。
+        默认只返回有值标签（排除 revoked 与已过期，含 unit 与 derived）；
+        include_empty=true 时按「可见在线标签中适用于该对象的标签」补全 status=none 空占位（占位也带 unit，组合标签无值同样占位）；
+        tag_codes 可精确取码，当前值、占位与组合标签都受同一份过滤约束。
+        空占位与精确取码已承接原组合画像接口的全部能力。
+        重复的 (type,id) 自动去重；单次最多 20 个类型 / 200 个对象；不分页，total = records 条数。
       parameters:
-        - name: objectId
-          in: path
-          required: true
-          schema: { type: string }
-          description: 对象 ID（签名使用编码后的路径）
         - name: object_type
           in: query
           required: true
-          schema: { type: string, example: driver }
+          schema: { type: string, example: "driver,vehicle" }
+          description: 对象类型，逗号分隔多值；单类型多对象时只传 1 个即可
+        - name: object_id
+          in: query
+          required: true
+          schema: { type: string, example: "DRV85001,VH10086" }
+          description: 对象 ID，逗号分隔多值；批量画像必须指定对象
         - name: include_pending
           in: query
           required: false
           schema: { type: boolean, default: false }
+        - name: include_empty
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+          description: 默认 false（只返回有值标签）；true 时补全 status=none 空占位，占位项同样带 unit
+        - name: tag_codes
+          in: query
+          required: false
+          schema: { type: string, example: "risk_level,avg_daily_duration" }
+          description: 逗号分隔的标签码，精确取码；当前值、空占位、组合标签都受同一份过滤约束；不传或空串 = 不过滤
         - $ref: '#/components/parameters/XAppKey'
         - $ref: '#/components/parameters/XTimestamp'
         - $ref: '#/components/parameters/XNonce'
@@ -193,56 +213,60 @@ paths:
                   - $ref: '#/components/schemas/BaseResponse'
                   - type: object
                     properties:
-                      data: { $ref: '#/components/schemas/ProfileView' }
+                      data: { $ref: '#/components/schemas/ProfileBatchView' }
         '401':
           $ref: '#/components/responses/Unauthorized'
 
-  /api/v1/open/objects/profile/combined:
+  /api/v1/open/tag-records:
     get:
       tags: [query]
-      summary: 司机+车辆组合标签内容
+      summary: 操作员打标记录（推荐入口）
       description: |
-        一次查询「司机 + 车辆」组合的标签当前值（数据齐全时覆盖清单-1015 的 32 个特征值：driver 17 / vehicle 15）。
-        `driver_id` / `vehicle_plate` 至少传一个，两段结果各自独立。
-        `include_empty=true`（默认）时无可取值的标签以 `status=none`、`tag_value=null` 占位返回
-        （占位范围 = 本租户可见在线标签中适用该对象类型的标签），便于渲染「待打标清单」；
-        可传 `include_empty=false` 仅取有值标签。`include_pending=true` 时包含待审核值。
-        `tag_codes` 可选：省略或为空时返回该对象类型下的全部可见在线标签（默认返回所有标签）；
-        传逗号分隔的标签码时仅返回这些标签（传清单-1015 的 32 个标签码即可精确取 32 个特征值）。
+        按操作员分页查询打标流水（含审核状态字段），支持对象/标签/时间过滤。
+        v1.22.0 起推荐用本接口（operator_id 走 query 参数，签名 PATH 为固定字符串、无动态段编码）；
+        旧路径式 /operators/{operatorId}/tag-records 保留兼容，响应结构完全一致。
       parameters:
-        - name: driver_id
+        - name: operator_id
+          in: query
+          required: true
+          schema: { type: string, example: OP_SERVICE01 }
+          description: 操作员 ID（写入时提交的 operator.operator_id）
+        - name: object_type
           in: query
           required: false
-          schema: { type: string, example: DRV85001 }
-          description: 司机对象 ID
-        - name: vehicle_plate
+          schema: { type: string }
+        - name: object_id
           in: query
           required: false
-          schema: { type: string, example: 苏A88801 }
-          description: 车辆标识（车牌号；省份简称 + 字母 + 5~6 位字母/数字；普通 7 位如 苏A88801，新能源 8 位如 苏AD12345）
-        - name: include_pending
+          schema: { type: string }
+        - name: tag_code
           in: query
           required: false
-          schema: { type: boolean, default: false }
-        - name: include_empty
+          schema: { type: string }
+        - name: from
           in: query
           required: false
-          schema: { type: boolean, default: true }
-        - name: tag_codes
+          schema: { type: string, example: '2026-10-01 00:00:00' }
+          description: 起始时间（yyyy-MM-dd HH:mm:ss，按 op_time）
+        - name: to
           in: query
           required: false
-          schema: { type: string, example: 'social_tendency,monthly_driving_days,cargo_type' }
-          description: |
-            可选，逗号分隔的标签码；省略或为空时不按标签过滤，返回该对象类型下全部可见在线标签。
-            非空时仅返回这些标签（与 include_empty 组合时无值标签仍占位）。
-            传清单-1015 的 32 个标签码可精确返回 32 个特征值（driver 17 / vehicle 15）。
+          schema: { type: string, example: '2026-10-31 23:59:59' }
+        - name: page
+          in: query
+          required: false
+          schema: { type: integer, default: 1 }
+        - name: size
+          in: query
+          required: false
+          schema: { type: integer, default: 20 }
         - $ref: '#/components/parameters/XAppKey'
         - $ref: '#/components/parameters/XTimestamp'
         - $ref: '#/components/parameters/XNonce'
         - $ref: '#/components/parameters/XSignature'
       responses:
         '200':
-          description: OK（driver_id / vehicle_plate 均缺失时返回 code 2001）
+          description: OK
           content:
             application/json:
               schema:
@@ -250,15 +274,16 @@ paths:
                   - $ref: '#/components/schemas/BaseResponse'
                   - type: object
                     properties:
-                      data: { $ref: '#/components/schemas/CombinedProfileView' }
+                      data: { $ref: '#/components/schemas/OperatorRecordsView' }
         '401':
           $ref: '#/components/responses/Unauthorized'
 
   /api/v1/open/operators/{operatorId}/tag-records:
     get:
+      deprecated: true
       tags: [query]
-      summary: 操作员打标记录
-      description: 按操作员分页查询打标流水（含审核状态字段），支持对象/标签/时间过滤。
+      summary: 操作员打标记录（路径式·兼容保留，推荐用 /tag-records）
+      description: 按操作员分页查询打标流水（含审核状态字段），支持对象/标签/时间过滤。v1.22.0 起新增 query 式 /api/v1/open/tag-records，本路径保留兼容，响应结构完全一致。
       parameters:
         - name: operatorId
           in: path
@@ -378,7 +403,35 @@ components:
         tag_code: { type: string }
         tag_name: { type: string }
         category_code: { type: string }
+        dim1_code:
+          type: string
+          nullable: true
+          description: 一级维度编码（tag_category 根节点，如 personality / driving_ops / baseline）
+        dim1_name:
+          type: string
+          nullable: true
+          description: 一级维度中文名称（实时解析自 tag_category，如 性格特征 / 运营模式；维度被删除时为 null）
+        dim2_code:
+          type: string
+          nullable: true
+          description: 二级维度编码（与 category_code 同值，如 personality_trait）
+        dim2_name:
+          type: string
+          nullable: true
+          description: 二级维度中文名称（实时解析自 tag_category；维度被删除时为 null）
+        priority:
+          type: integer
+          nullable: true
+          description: 标签优先级（来源清单「人工打标签标签」列，数值越小越靠前；null = 非人工打标标签）
+        dim1_priority:
+          type: integer
+          nullable: true
+          description: 所属一级维度的展示优先级（与 ext.dim1_priority 同源，数值型便捷字段）；未配置为 null
         value_type: { type: string, enum: [boolean, enum, number, string, date] }
+        unit:
+          type: string
+          nullable: true
+          description: 数值型统计指标的计量单位（如 小时 / 天 / 次 / 公里）；文本、布尔、枚举类为 null
         value_range:
           type: string
           nullable: true
@@ -407,7 +460,23 @@ components:
         value_ttl_days: { type: integer, description: 0 表示不过期 }
         sensitivity: { type: string, enum: [L1, L2, L3, L4] }
         status: { type: string, enum: [online, offline, reviewing, rejected] }
-        version: { type: integer }
+        version:
+          type: integer
+          description: 标签定义版本号（每次修改定义 +1，可用于对接方判断本地缓存是否过期）
+        derived: { type: boolean, description: 是否组合标签（查询期计算，不可写入） }
+        updated_at: { type: string, format: date-time }
+        ext:
+          type: object
+          additionalProperties: { type: string }
+          description: |
+            租户级标签扩展信息（key→value，值统一为字符串）。未单独配置时返回属性默认值，未配置且无默认值的属性不出现。
+            内置 key：
+              show_screen   标签展示屏幕：主 / 副（默认 副）
+              hidden        是否隐藏：true / false（默认 false）
+              script        标签话术（文本，可能较长）
+              risk_priority 标签风控展示优先级（整数，越小越靠前）
+              dim1_priority 所属一级维度的展示优先级（整数，随维度配置；与顶层数值字段 dim1_priority 同源）
+            租户可在控制台增减自定义属性，接入方应忽略不认识的 key。
 
     Operator:
       type: object
@@ -423,6 +492,16 @@ components:
       required: [biz_request_id, items]
       properties:
         biz_request_id: { type: string, maxLength: 96, description: 幂等键（接入方业务请求 ID，24h 去重） }
+        task_id:
+          type: integer
+          format: int64
+          nullable: true
+          description: |
+            关联打标任务 ID。两种用法对应两条通道：
+            不传 = 通用写入通道：可在任意时间推送标签值，不受任务状态与任务进度约束（任务进行中、已验收、已取消都照常受理），只追加流水与事件，不影响任何任务的进度与对象项状态。
+            传入 = 任务作业通道：校验任务状态（published / in_progress / reviewing，已验收拒绝写入），标签写齐后自动推进任务项。
+            支持分批：单次只需推任务中的部分标签（甚至 1 个），对象项先置 in_progress，必填标签全部写完才自动完成。
+            全部对象模式：任务 all_objects=true 时不校验对象是否已在任务快照中，写入的新对象自动纳入任务项并参与进度统计。
         items:
           type: array
           minItems: 1
@@ -435,6 +514,12 @@ components:
       properties:
         object_type: { type: string, example: driver }
         object_id: { type: string, example: DRV00001 }
+        object_name:
+          type: string
+          nullable: true
+          maxLength: 256
+          description: 对象名称（姓名 / 车牌号 / 车队名等），仅用于展示与流水追溯；不参与对象主键、幂等判断与频控
+          example: 张伟
         tag_code: { type: string, example: driving_risk_attitude }
         tag_value: { type: string, maxLength: 2048, description: '按标签 value_type 传字符串。enum 单选传一个枚举值；多选（value_multiple=true）传英文逗号分隔的多个枚举值，如 公共道路,港口' }
         biz_time: { type: string, nullable: true, example: '2026-10-14 10:00:00' }
@@ -492,8 +577,36 @@ components:
       properties:
         tag_code: { type: string }
         tag_name: { type: string }
+        dim1_code:
+          type: string
+          nullable: true
+          description: 一级维度编码（tag_category 根节点）；组合标签与未配置维度的标签为 null
+        dim1_name:
+          type: string
+          nullable: true
+          description: 一级维度中文名称（实时解析自维度字典）
+        dim2_code:
+          type: string
+          nullable: true
+          description: 二级维度编码（与 category_code 同值）
+        dim2_name:
+          type: string
+          nullable: true
+          description: 二级维度中文名称（实时解析自维度字典）
+        priority:
+          type: integer
+          nullable: true
+          description: 标签优先级（维度内展示顺序，越小越靠前；null = 非人工打标标签）
+        dim1_priority:
+          type: integer
+          nullable: true
+          description: 所属一级维度的展示优先级（越小维度越靠前）；未配置为 null
         tag_value: { type: string, nullable: true, description: null = 无当前值（status=none） }
         value_type: { type: string }
+        unit:
+          type: string
+          nullable: true
+          description: 计量单位（数值型统计指标如 小时 / 天 / 次 / 公里）；文本、布尔、枚举类为 null；占位项（status=none）同样带单位
         status: { type: string, enum: [effective, pending_audit, none] }
         source_mode: { type: string, nullable: true, enum: [manual, statistics, hybrid, algo], description: 标签打标来源类型（字典字段） }
         need_value_audit: { type: boolean, description: true = 敏感标签，写入后进值审核 }
@@ -519,30 +632,15 @@ components:
           type: array
           items: { $ref: '#/components/schemas/TagItem' }
 
-    CombinedProfileView:
+    ProfileBatchView:
       type: object
+      description: 对象画像唯一入口的响应；records 中每个元素与 ProfileView 结构完全一致，顺序与传入对象一致；include_empty=true 时 tags 含 status=none 占位
       properties:
         tenant_id: { type: string }
-        driver:
-          nullable: true
-          allOf:
-            - $ref: '#/components/schemas/ProfileSection'
-          description: 未传 driver_id 时为 null
-        vehicle:
-          nullable: true
-          allOf:
-            - $ref: '#/components/schemas/ProfileSection'
-          description: 未传 vehicle_plate 时为 null
-        total: { type: integer, description: 两段标签总数 }
-
-    ProfileSection:
-      type: object
-      properties:
-        object_type: { type: string }
-        object_id: { type: string }
-        tags:
+        total: { type: integer, description: 去重后的对象数 = records 条数；本接口不分页 }
+        records:
           type: array
-          items: { $ref: '#/components/schemas/TagItem' }
+          items: { $ref: '#/components/schemas/ProfileView' }
 
     TagValueFull:
       type: object
@@ -584,3 +682,7 @@ components:
         records:
           type: array
           items: { $ref: '#/components/schemas/TagValueFull' }
+        units:
+          type: object
+          additionalProperties: { type: string }
+          description: 标签码 → 计量单位映射，仅含本页出现且配置了单位的标签；流水按追加式存储，不在每条记录里冗余单位

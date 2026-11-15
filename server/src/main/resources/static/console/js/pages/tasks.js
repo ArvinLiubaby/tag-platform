@@ -1,6 +1,7 @@
 /** 控制台页面模块 · tasks */
 import * as core from '../core.js';
-const { TOKEN_KEY, USER_KEY, state, PAGE_TITLES, PAGE_SUBTITLES, STATUS_BADGE, ROLE_LABEL, ROLE_BADGE, PRIORITY_LABEL, PRIORITY_BADGE, $, esc, dash, badge, emptyState, tableWrap, tableLoading, STAT_ICONS, statIcon, statCards, copyText, setBusy, toastTimer, toast, openModal, closeModal, api, qs, loadPermissions, loadAppVersion, showLogin, navBadgeLoaded, navBadgeLoading, updateNavPending, loadNavBadges, showApp, applyNavPermissions, signIn, signOutHooks, onSignOut, signOut, bindLogin, isAdmin, isTenantAdmin, permissionsLoaded, can, canByPermission, canManageUsers, canViewAuditQueue, canViewAuditLogs, canViewTenants, canViewRoles, canTag, canReview, canManageTasks, canManageTagDefinitions, workTenantId, setWorkTenant, fillTenantSelect, fmtDt, parseJsonValue } = core;
+import { toBackendTime } from '../shared.js';
+const { TOKEN_KEY, USER_KEY, state, PAGE_TITLES, PAGE_SUBTITLES, STATUS_BADGE, ROLE_LABEL, ROLE_BADGE, PRIORITY_LABEL, PRIORITY_BADGE, $, esc, dash, badge, emptyState, tableWrap, tableLoading, STAT_ICONS, statIcon, statCards, copyText, setBusy, toastTimer, toast, openModal, closeModal, api, qs, loadPermissions, loadAppVersion, showLogin, navBadgeLoaded, navBadgeLoading, updateNavPending, loadNavBadges, showApp, applyNavPermissions, signIn, signOutHooks, onSignOut, signOut, bindLogin, isAdmin, isTenantAdmin, permissionsLoaded, can, canByPermission, canManageUsers, canViewAuditQueue, canViewAuditLogs, canViewTenants, canViewRoles, canTag, canReview, canManageTasks, canManageTagDefinitions, workTenantId, setWorkTenant, fillTenantSelect, fmtDt, parseJsonValue, canAcceptTasks } = core;
 
   /* ============================================================
    * 页面 11：我的任务
@@ -133,7 +134,7 @@ const { TOKEN_KEY, USER_KEY, state, PAGE_TITLES, PAGE_SUBTITLES, STATUS_BADGE, R
       '    <div class="field"><span>状态</span><select id="task-status">' +
       '      <option value="">全部状态</option><option value="draft">草稿</option><option value="published">已发布</option>' +
       '      <option value="in_progress">进行中</option><option value="reviewing">审核中</option>' +
-      '      <option value="completed">已完成</option><option value="cancelled">已取消</option></select></div>' +
+      '      <option value="completed">已完成</option><option value="verified">已验收</option><option value="cancelled">已取消</option></select></div>' +
       '    <button class="btn btn-primary" id="task-search">查询</button>' +
       '  </div>' +
       '  <div id="task-table"></div>' +
@@ -162,7 +163,7 @@ const { TOKEN_KEY, USER_KEY, state, PAGE_TITLES, PAGE_SUBTITLES, STATUS_BADGE, R
           { label: '任务总数', value: rows.length, hint: '当前租户', icon: 'tag' },
           { label: '执行中', value: running, hint: '已发布 / 进行中 / 审核中', tone: 'blue', icon: 'clock' },
           { label: '待审核项', value: review, hint: '提交后等待审核', tone: 'amber', icon: 'shield' },
-          { label: '已完成', value: rows.filter(function (x) { return x.task.status === 'completed'; }).length, hint: '状态为已完成', tone: 'green', icon: 'check' }
+          { label: '已完成', value: rows.filter(function (x) { return x.task.status === 'completed' || x.task.status === 'verified'; }).length, hint: '含已验收', tone: 'green', icon: 'check' }
         ]);
       }
       if (!rows.length) { $('#task-table').innerHTML = emptyState('暂无任务', '点击新建任务开始派发打标'); return; }
@@ -226,7 +227,7 @@ const { TOKEN_KEY, USER_KEY, state, PAGE_TITLES, PAGE_SUBTITLES, STATUS_BADGE, R
         '</section>' +
         '<section class="form-section">' +
         '  <div class="form-section-head"><span class="form-section-index">02</span><div><h4>对象范围</h4>' +
-        '    <p>默认使用对象索引中的全部对象，也可以按条件筛选或手动输入。</p></div></div>' +
+        '    <p>全部对象：对象索引中的对象先纳入快照，之后外部推送的任意对象也会自动接收，不做对象存在性校验。</p></div></div>' +
         '  <div class="object-scope">' +
         '    <label class="scope-option"><input type="radio" name="nt-object-scope" value="all" checked>' +
         '      <span><b>全部对象（默认）</b><small id="nt-object-total">统计中…</small></span></label>' +
@@ -244,7 +245,7 @@ const { TOKEN_KEY, USER_KEY, state, PAGE_TITLES, PAGE_SUBTITLES, STATUS_BADGE, R
         '</section>' +
         '<section class="form-section">' +
         '  <div class="form-section-head"><span class="form-section-index">03</span><div><h4>目标标签</h4>' +
-        '    <p>选择需要采集的标签；敏感标签提交后在审核通过前不会写入。</p></div>' +
+        '    <p>仅展示允许写入的在线标签；敏感标签提交后在审核通过前不会写入。</p></div>' +
         '    <span class="count-chip" id="nt-tag-selected">0</span></div>' +
         '  <div class="tag-picker-toolbar"><input id="nt-tag-search" placeholder="搜索标签名称或 tag_code">' +
         '    <span class="muted">已选择 <b id="nt-tag-selected-text">0</b> 个标签</span></div>' +
@@ -350,8 +351,8 @@ const { TOKEN_KEY, USER_KEY, state, PAGE_TITLES, PAGE_SUBTITLES, STATUS_BADGE, R
       var hint = $('#nt-object-all-hint');
       if (!hint) return;
       if (!taskCreateState.total) {
-        hint.className = 'object-scope-hint warn';
-        hint.innerHTML = '对象索引中暂无 ' + esc(type) + ' 对象；请切换到「指定对象」手动输入，或先通过历史任务导入对象。';
+        hint.className = 'object-scope-hint';
+        hint.innerHTML = '对象索引中暂无 ' + esc(type) + ' 对象；<b>仍可创建「全部对象」任务</b>，发布后外部推送的对象会自动纳入，无需预先导入。';
       } else if (taskCreateState.total > 10000) {
         hint.className = 'object-scope-hint warn';
         hint.innerHTML = '对象索引共 ' + taskCreateState.total + ' 个，超过单任务上限 10000；请改为指定对象分批创建。';
@@ -455,9 +456,6 @@ const { TOKEN_KEY, USER_KEY, state, PAGE_TITLES, PAGE_SUBTITLES, STATUS_BADGE, R
     var scopeRadio = document.querySelector('input[name="nt-object-scope"]:checked');
     var allObjects = !scopeRadio || scopeRadio.value === 'all';
     var objectIds = allObjects ? [] : ntCollectObjectIds();
-    if (allObjects && !taskCreateState.total) {
-      toast('对象索引中暂无该类型对象，请切换为「指定对象」手动输入', 'err'); return;
-    }
     if (allObjects && taskCreateState.total > 10000) {
       toast('对象数超过单任务上限 10000，请改为指定对象分批创建', 'err'); return;
     }
@@ -478,7 +476,7 @@ const { TOKEN_KEY, USER_KEY, state, PAGE_TITLES, PAGE_SUBTITLES, STATUS_BADGE, R
       assignee_user_id: mode === 'assignee' ? Number($('#nt-assignee').value) : null,
       team: mode === 'team' ? $('#nt-team').value.trim() : null,
       review_required: $('#nt-review').checked,
-      due_at: $('#nt-due').value ? $('#nt-due').value + ':00' : null,
+      due_at: $('#nt-due').value ? toBackendTime($('#nt-due').value) : null,
       tag_codes: tagCodes,
       object_ids: objectIds,
       all_objects: allObjects,
@@ -514,7 +512,8 @@ const { TOKEN_KEY, USER_KEY, state, PAGE_TITLES, PAGE_SUBTITLES, STATUS_BADGE, R
       var html =
         '<div class="task-detail-head">' +
         '  <div><div class="task-detail-title">' + esc(task.title) + '</div>' +
-        '  <div class="task-detail-meta mono">' + esc(task.task_code) + ' · ' + esc(task.tenant_id) + '</div></div>' +
+        '  <div class="task-detail-meta mono">' + esc(task.task_code) + ' · ' + esc(task.tenant_id) +
+        (task.all_objects ? ' · <b>全部对象模式</b>' : '') + '</div></div>' +
         '  <div class="row-actions">' + badge(task.status) +
         '    <span class="badge ' + (PRIORITY_BADGE[task.priority] || 'badge-gray') + '">' + esc(PRIORITY_LABEL[task.priority] || task.priority) + '</span></div>' +
         '</div>' +
@@ -529,13 +528,16 @@ const { TOKEN_KEY, USER_KEY, state, PAGE_TITLES, PAGE_SUBTITLES, STATUS_BADGE, R
         '<div class="task-detail-block"><div class="task-detail-block-head"><b>进度</b><span>' + progress + '</span></div>' +
         '  <div class="task-stat-chips">' + taskStatChips(stats) + '</div>' +
         '  <div class="task-tag-chips">' + tags.map(function (t) {
-          return '<span class="chip chip-static mono">' + esc(t.tag_code) + (t.required ? ' *' : '') + '</span>';
+          return '<span class="chip chip-static mono">' + esc(t.tag_name || t.tag_code) +
+            (t.tag_name && t.tag_code && t.tag_name !== t.tag_code ? ' (' + esc(t.tag_code) + ')' : '') +
+            (t.required ? ' *' : '') + '</span>';
         }).join('') + '</div></div>' +
-        (canManage || canReview() ? '<div class="task-detail-actions">' +
+        (canManage || canReview() || canAcceptTasks() ? '<div class="task-detail-actions">' +
           (canManage && task.status === 'draft' ? '<button class="btn btn-primary btn-sm" data-task-publish="1">发布任务</button>' : '') +
           (canManage && ['draft', 'published', 'in_progress'].indexOf(task.status) >= 0 ? '<button class="btn btn-ghost btn-sm" data-task-import="1">导入对象</button>' : '') +
-          (canManage && ['completed', 'cancelled'].indexOf(task.status) < 0 ? '<button class="btn btn-ghost btn-sm" data-task-assign="1">改派</button>' : '') +
-          (canManage && ['completed', 'cancelled'].indexOf(task.status) < 0 ? '<button class="btn btn-danger btn-sm" data-task-cancel="1">取消任务</button>' : '') +
+          (canManage && ['completed', 'cancelled', 'verified'].indexOf(task.status) < 0 ? '<button class="btn btn-ghost btn-sm" data-task-assign="1">改派</button>' : '') +
+          (canManage && ['completed', 'cancelled', 'verified'].indexOf(task.status) < 0 ? '<button class="btn btn-danger btn-sm" data-task-cancel="1">取消任务</button>' : '') +
+          (canAcceptTasks() && task.status === 'completed' ? '<button class="btn btn-primary btn-sm" data-task-accept="1">验收</button>' : '') +
           '<button class="btn btn-ghost btn-sm" data-task-reload="1">刷新</button>' +
           '</div>' : '') +
         '<div class="task-detail-block"><div class="task-detail-block-head"><b>任务项</b><span>最多展示 200 条</span></div>' +
@@ -552,6 +554,9 @@ const { TOKEN_KEY, USER_KEY, state, PAGE_TITLES, PAGE_SUBTITLES, STATUS_BADGE, R
       var scope = $('#modal-body');
       scope.querySelectorAll('[data-task-reload]').forEach(function (b) {
         b.addEventListener('click', function () { openTaskDetail(task.id); });
+      });
+      scope.querySelectorAll('[data-task-accept]').forEach(function (b) {
+        b.addEventListener('click', function () { openAcceptTask(task); });
       });
       scope.querySelectorAll('[data-task-publish]').forEach(function (b) {
         b.addEventListener('click', function () { confirmTaskAction('发布会校验目标标签与对象，确认发布？', '/tasks/' + task.id + '/publish', {}, task.id); });
@@ -613,7 +618,7 @@ const { TOKEN_KEY, USER_KEY, state, PAGE_TITLES, PAGE_SUBTITLES, STATUS_BADGE, R
 
   function eventLabel(type) {
     var labels = {
-      create: '创建', import: '导入对象', publish: '发布', claim: '领取', submit: '提交',
+      create: '创建', import: '导入对象', publish: '发布', claim: '领取', submit: '提交', accept: '验收',
       approve: '审核通过', reject: '驳回', skip: '跳过', cancel: '取消', complete: '完成',
       assign: '改派', progress: '开始执行', review: '进入审核', update: '编辑'
     };
@@ -634,6 +639,29 @@ const { TOKEN_KEY, USER_KEY, state, PAGE_TITLES, PAGE_SUBTITLES, STATUS_BADGE, R
           }).catch(function (e) { setBusy(btn, false); toast(e.message, 'err'); });
         } }
     ]);
+  }
+
+  function openAcceptTask(task) {
+    openModal('验收任务 · ' + task.task_code,
+      '<div class="field"><span>验收备注（可选）</span>' +
+      '<textarea id="accept-note" rows="3" placeholder="如：抽查通过 / 与业务核对无误"></textarea></div>' +
+      '<div class="notice notice-warn" style="margin-top:12px">验收后任务状态变为「已验收」，' +
+      '任务内对象的相关标签将禁止临时打标；验收不可取消，后续变更需新建任务。</div>',
+      [
+        { text: '取消', cls: 'btn-ghost', onClick: closeModal },
+        { text: '确认验收', cls: 'btn-primary', onClick: function () {
+            var btn = this;
+            var note = $('#accept-note').value.trim();
+            setBusy(btn, true);
+            api('/tasks/' + task.id + '/accept', { method: 'POST', body: { note: note || null } })
+              .then(function () {
+                closeModal();
+                toast('任务已验收', 'ok');
+                openTaskDetail(task.id);
+                loadTasks();
+              }).catch(function (e) { setBusy(btn, false); toast(e.message, 'err'); });
+          } }
+      ], 'lg');
   }
 
   function openImportTask(task) {
@@ -760,7 +788,7 @@ const { TOKEN_KEY, USER_KEY, state, PAGE_TITLES, PAGE_SUBTITLES, STATUS_BADGE, R
           { label: '待审核项', value: data.pending_review || 0, hint: '审核队列积压', tone: 'purple', icon: 'shield' }
         ]);
       }
-      var order = ['draft', 'published', 'in_progress', 'reviewing', 'completed', 'cancelled'];
+      var order = ['draft', 'published', 'in_progress', 'reviewing', 'completed', 'verified', 'cancelled'];
       var max = 1;
       order.forEach(function (k) { max = Math.max(max, counts[k] || 0); });
       $('#tm-status').innerHTML = order.map(function (k) {

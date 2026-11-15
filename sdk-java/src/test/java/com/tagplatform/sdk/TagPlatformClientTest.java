@@ -94,11 +94,12 @@ class TagPlatformClientTest {
                     "\"status\":\"accepted\",\"message\":null}," +
                     "{\"index\":1,\"object_type\":\"driver\",\"object_id\":\"DRV00001\",\"tag_code\":\"suspected_fraud\"," +
                     "\"status\":\"pending_audit\",\"message\":null}]}}");
-        } else if (path.contains("/profile")) {
+        } else if (path.equals("/api/v1/open/objects/profiles")) {
             respond(exchange, 200, "{\"code\":0,\"message\":\"ok\",\"request_id\":\"r3\",\"data\":{" +
-                    "\"tenant_id\":\"risk_control\",\"object_type\":\"driver\",\"object_id\":\"DRV00001\",\"tags\":[" +
+                    "\"tenant_id\":\"risk_control\",\"total\":1,\"records\":[" +
+                    "{\"tenant_id\":\"risk_control\",\"object_type\":\"driver\",\"object_id\":\"DRV00001\",\"tags\":[" +
                     "{\"tag_code\":\"risk_level\",\"tag_name\":\"风险等级\",\"tag_value\":\"high\",\"status\":\"effective\"," +
-                    "\"biz_time\":\"2026-10-14 10:00:00\",\"operator_id\":\"OP1001\"}]}}");
+                    "\"biz_time\":\"2026-10-14 10:00:00\",\"operator_id\":\"OP1001\"}]}]}}");
         } else if (path.contains("/tag-records")) {
             respond(exchange, 200, "{\"code\":0,\"message\":\"ok\",\"request_id\":\"r4\",\"data\":{" +
                     "\"operator_id\":\"OP1001\",\"page\":1,\"size\":20,\"total\":1,\"records\":[" +
@@ -161,10 +162,22 @@ class TagPlatformClientTest {
 
     @Test
     void profileParsesLocalDateTime() {
+        // 便捷方法内部已改为走统一入口 /objects/profiles（老单对象端点已下线）
         TagPlatformClient.ProfileView profile = client.getProfile("driver", "DRV00001", true);
         assertThat(profile.tags()).hasSize(1);
         assertThat(profile.tags().get(0).tagName()).isEqualTo("风险等级");
         assertThat(profile.tags().get(0).bizTime()).isEqualTo(LocalDateTime.of(2026, 10, 14, 10, 0, 0));
+    }
+
+    @Test
+    void profilesParsesBatchResponse() {
+        TagPlatformClient.ProfileBatchView batch = client.getProfiles("driver", "DRV00001,DRV00002",
+                true, true, List.of("risk_level"));
+        assertThat(batch.total()).isEqualTo(1);
+        assertThat(batch.records()).hasSize(1);
+        assertThat(batch.records().get(0).objectId()).isEqualTo("DRV00001");
+        assertThat(batch.records().get(0).tags().get(0).tagName()).isEqualTo("风险等级");
+        assertThat(requestCount.get()).isEqualTo(1);
     }
 
     @Test

@@ -10,6 +10,7 @@ public record TagValue(
         String tenantId,
         String objectType,
         String objectId,
+        String objectName,
         String tagCode,
         String tagValue,
         String valueType,

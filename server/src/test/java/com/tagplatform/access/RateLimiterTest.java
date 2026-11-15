@@ -17,7 +17,9 @@ class RateLimiterTest {
                 "memory", "h2",
                 new AppProperties.StarRocks("jdbc:h2:mem:test", "sa", "", false),
                 new AppProperties.Limits(ipQps, operatorQps, objectTagQps, 1000, 300, 60, 24),
-                new AppProperties.Console(8));
+                new AppProperties.Console(8),
+                new AppProperties.Kafka(false, "", "profile_tag_write", "tag-platform-write",
+                        "profile_tag_write_dlq", "", 1, 50));
     }
 
     private RateLimiter limiter(int ipQps, int operatorQps, int objectTagQps) {

@@ -58,8 +58,11 @@ class WriteFlowIntegrationTest {
     private TagValueStore tagValueStore;
 
     private WriteRequest.WriteItem writeItem(String objectId, String tagCode, String value, String remark) {
+        // 用相对当前时间：expire_time = biz_time + 标签 TTL，写死历史日期会在某天集体过期，
+        // 导致画像按设计过滤掉过期值、测试突然失败（2026-11-13 踩过一次）。
+        LocalDateTime bizTime = LocalDateTime.now().minusHours(1);
         return new WriteRequest.WriteItem("driver", objectId, tagCode, value,
-                LocalDateTime.parse("2026-10-14T10:00:00"), LocalDateTime.parse("2026-10-14T10:01:00"),
+                bizTime, bizTime.plusMinutes(1),
                 OPERATOR, "it-test", "高", remark, null, null);
     }
 
@@ -114,7 +117,9 @@ class WriteFlowIntegrationTest {
         // 模拟外部程序写 latest 后，默认不返回 pending，includePending 可见
         syncLatest("driver", objectId, "suspected_fraud");
         assertThat(profileQueryService.profile(TENANT, "driver", objectId, false).tags()).isEmpty();
-        assertThat(profileQueryService.profile(TENANT, "driver", objectId, true).tags()).hasSize(1);
+        assertThat(profileQueryService.profile(TENANT, "driver", objectId, true).tags())
+                .as("latest=%s", tagValueStore.listLatestByObject(TENANT, "driver", objectId))
+                .hasSize(1);
 
         // 待审核队列仍可只读查询
         assertThat(auditValueService.pending(100))
@@ -190,10 +195,19 @@ class WriteFlowIntegrationTest {
     }
 
     @Test
-    void objectIdPatternEnforced() {
+    void objectIdPatternNotEnforced() {
+        // 2026-11-11 起取消 id_pattern 校验：不像 DRVxxxxx 的 ID 也照常受理
+        WriteResult result = write(UUID.randomUUID().toString(),
+                writeItem("BAD-ID-123", "risk_level", "high", null));
+        assertThat(result.accepted()).isEqualTo(1);
+    }
+
+    @Test
+    void blankObjectIdStillRejected() {
         assertThatThrownBy(() -> write(UUID.randomUUID().toString(),
-                writeItem("BAD-ID-123", "risk_level", "high", null)))
-                .isInstanceOf(BizException.class);
+                writeItem("   ", "risk_level", "high", null)))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("object_id 不能为空");
     }
 
     @Test
@@ -284,7 +298,7 @@ class WriteFlowIntegrationTest {
     }
 
     @Test
-    void combinedProfileForDriverAndVehicle() {
+    void batchProfileForDriverAndVehicle() {
         String plate = "苏A88883";
         write(UUID.randomUUID().toString(),
                 writeItem("DRV91001", "risk_level", "high", null),
@@ -296,49 +310,52 @@ class WriteFlowIntegrationTest {
         syncLatest("driver", "DRV91001", "risk_level");
         syncLatest("vehicle", plate, "high_mileage");
 
-        var combined = profileQueryService.combinedProfile(TENANT, "DRV91001", plate, false, true, null);
+        // 统一入口：多类型混合对象（driver,vehicle 按位置配对）+ 空占位，替代原组合画像接口
+        var batch = profileQueryService.profiles(TENANT, "driver,vehicle", "DRV91001," + plate,
+                false, true, Set.of());
+        assertThat(batch.total()).isEqualTo(2);
+        var driverTags = batch.records().get(0).tags();
+        var vehicleTags = batch.records().get(1).tags();
 
-        // risk_control 可见且适配该对象的标签：driver 4 个（3 个无值占位）/ vehicle 2 个（1 个占位）
-        assertThat(combined.driver().tags()).hasSize(4);
-        assertThat(combined.vehicle().tags()).hasSize(2);
-        assertThat(combined.total()).isEqualTo(6);
+        // risk_control 可见且适配该对象的标签：driver 7 个（6 个无值占位，含人员基础属性 3 个）/ vehicle 2 个（1 个占位）
+        assertThat(driverTags).hasSize(7);
+        assertThat(vehicleTags).hasSize(2);
 
         // 有值项带字典元数据（source_mode 来自 V4 回填）
-        assertThat(combined.driver().tags()).anyMatch(t -> "risk_level".equals(t.tagCode())
+        assertThat(driverTags).anyMatch(t -> "risk_level".equals(t.tagCode())
                 && "high".equals(t.tagValue()) && "effective".equals(t.status())
                 && "hybrid".equals(t.sourceMode()));
-        assertThat(combined.vehicle().tags()).anyMatch(t -> "high_mileage".equals(t.tagCode())
+        assertThat(vehicleTags).anyMatch(t -> "high_mileage".equals(t.tagCode())
                 && "120000".equals(t.tagValue()));
 
         // 无值占位：status=none、值为 null、保留 need_value_audit 标记
-        assertThat(combined.driver().tags()).anyMatch(t -> "suspected_fraud".equals(t.tagCode())
+        assertThat(driverTags).anyMatch(t -> "suspected_fraud".equals(t.tagCode())
                 && ProfileView.STATUS_NONE.equals(t.status()) && t.tagValue() == null && t.needValueAudit());
 
         // 对象适配过滤：vehicle 绑定标签不出现在 driver 段；fleet 绑定标签两段均不出现
-        assertThat(combined.driver().tags()).noneMatch(t -> "plate_blacklist".equals(t.tagCode()));
-        assertThat(combined.driver().tags()).noneMatch(t -> "fleet_risk".equals(t.tagCode()));
-        assertThat(combined.vehicle().tags()).noneMatch(t -> "fleet_risk".equals(t.tagCode()));
+        assertThat(driverTags).noneMatch(t -> "plate_blacklist".equals(t.tagCode()));
+        assertThat(driverTags).noneMatch(t -> "fleet_risk".equals(t.tagCode()));
+        assertThat(vehicleTags).noneMatch(t -> "fleet_risk".equals(t.tagCode()));
 
-        // 仅传 vehicle_plate 且 include_empty=false → 只返回有值项
-        var vehicleOnly = profileQueryService.combinedProfile(TENANT, null, plate, false, false, null);
-        assertThat(vehicleOnly.driver()).isNull();
-        assertThat(vehicleOnly.vehicle().tags()).hasSize(1);
-        assertThat(vehicleOnly.vehicle().tags().get(0).tagCode()).isEqualTo("high_mileage");
+        // 单类型单对象 + include_empty=false → 只返回有值项
+        var vehicleOnly = profileQueryService.profiles(TENANT, "vehicle", plate, false, false, Set.of());
+        assertThat(vehicleOnly.total()).isEqualTo(1);
+        assertThat(vehicleOnly.records().get(0).tags()).hasSize(1);
+        assertThat(vehicleOnly.records().get(0).tags().get(0).tagCode()).isEqualTo("high_mileage");
 
         // tag_codes 精确过滤（清单-1015 场景）：仅返回指定标签；无值仍以 none 占位；不适配标签不出现在该段
-        var filtered = profileQueryService.combinedProfile(TENANT, "DRV91001", plate, false, true,
-                Set.of("risk_level", "driver_score", "high_mileage", "plate_blacklist"));
-        assertThat(filtered.driver().tags()).extracting(ProfileView.TagItem::tagCode)
+        var filtered = profileQueryService.profiles(TENANT, "driver,vehicle", "DRV91001," + plate,
+                false, true, Set.of("risk_level", "driver_score", "high_mileage", "plate_blacklist"));
+        assertThat(filtered.records().get(0).tags()).extracting(ProfileView.TagItem::tagCode)
                 .containsExactlyInAnyOrder("risk_level", "driver_score");
-        assertThat(filtered.vehicle().tags()).extracting(ProfileView.TagItem::tagCode)
+        assertThat(filtered.records().get(1).tags()).extracting(ProfileView.TagItem::tagCode)
                 .containsExactlyInAnyOrder("high_mileage", "plate_blacklist");
-        assertThat(filtered.driver().tags()).anyMatch(t -> "driver_score".equals(t.tagCode())
+        assertThat(filtered.records().get(0).tags()).anyMatch(t -> "driver_score".equals(t.tagCode())
                 && ProfileView.STATUS_NONE.equals(t.status()));
-        assertThat(filtered.total()).isEqualTo(4);
 
-        // 两个 ID 都缺 → 参数错误
-        assertThatThrownBy(() -> profileQueryService.combinedProfile(TENANT, null, null, false, true, null))
-                .isInstanceOf(BizException.class).hasMessageContaining("至少");
+        // object_id 缺失 → 参数错误
+        assertThatThrownBy(() -> profileQueryService.profiles(TENANT, "driver", null, false, true, Set.of()))
+                .isInstanceOf(BizException.class).hasMessageContaining("object_id");
     }
 
     @Test

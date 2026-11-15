@@ -60,6 +60,12 @@ public class WorkbenchController {
         return ApiResponse.ok(workbenchService.profile(objectType, objectId));
     }
 
+    @GetMapping("/verified-locks")
+    public ApiResponse<List<String>> verifiedLocks(@RequestParam("objectType") String objectType,
+                                                   @RequestParam("objectId") String objectId) {
+        return ApiResponse.ok(workbenchService.verifiedLocks(objectType, objectId));
+    }
+
     @GetMapping("/tags")
     public ApiResponse<List<TagMeta>> tags(
             @RequestParam(value = "objectType", required = false) String objectType) {

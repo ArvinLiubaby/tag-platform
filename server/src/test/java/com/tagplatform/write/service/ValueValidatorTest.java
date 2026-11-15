@@ -11,12 +11,12 @@ class ValueValidatorTest {
     private final ValueValidator validator = new ValueValidator(new ObjectMapper());
 
     private TagMeta tag(String valueType, String valueRange) {
-        return new TagMeta(1L, "t_code", "测试标签", "cat", valueType, valueRange, false,
+        return new TagMeta(1L, "t_code", "测试标签", "cat", null, null, null, valueType, valueRange, false,
                 "rule", false, 0, "risk_control", "L1", "online", 1, null, null, true, null, null);
     }
 
     private TagMeta multiTag(String valueRange) {
-        return new TagMeta(1L, "t_code", "测试标签", "cat", "enum", valueRange, true,
+        return new TagMeta(1L, "t_code", "测试标签", "cat", null, null, null, "enum", valueRange, true,
                 "rule", false, 0, "risk_control", "L1", "online", 1, null, null, true, null, null);
     }
 
@@ -78,7 +78,7 @@ class ValueValidatorTest {
 
     @Test
     void multiOnlyForEnum() {
-        TagMeta t = new TagMeta(1L, "t_code", "测试标签", "cat", "string", null, true,
+        TagMeta t = new TagMeta(1L, "t_code", "测试标签", "cat", null, null, null, "string", null, true,
                 "rule", false, 0, "risk_control", "L1", "online", 1, null, null, true, null, null);
         assertThat(validator.validate(t, "a,b")).contains("仅 enum");
     }

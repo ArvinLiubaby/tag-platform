@@ -96,10 +96,39 @@ public class WorkbenchService {
                 reviewer ? taskRepository.countReviewItems(tenantId) : 0L);
     }
 
+    /**
+     * 最近对象：**以 tag_value_latest 为事实源**（外部直写 latest 的对象也能出现），
+     * object_index 只用于补充「已导入任务但尚无标签值」的对象。
+     * 只读 object_index 会漏掉全部绕过平台写入的对象。
+     */
     public List<TaskModels.ObjectRow> objects(String objectType, String keyword, int limit) {
         WorkbenchAccess.requireWorkbench();
         String tenantId = WorkbenchAccess.requireTenant();
-        return objectIndexRepository.search(tenantId, trimToNull(objectType), keyword, limit);
+        String type = trimToNull(objectType);
+        int size = Math.max(1, Math.min(limit, 200));
+        List<TaskModels.ObjectRow> indexed = objectIndexRepository.search(tenantId, type, keyword, size);
+
+        List<TagValueStore.ObjectRef> live;
+        try {
+            live = tagValueStore.listObjects(tenantId, type, keyword, size);
+        } catch (RuntimeException e) {
+            return indexed;
+        }
+        if (live.isEmpty()) {
+            return indexed;
+        }
+        Map<String, TaskModels.ObjectRow> merged = new LinkedHashMap<>();
+        for (TagValueStore.ObjectRef ref : live) {
+            merged.putIfAbsent(ref.objectId(), new TaskModels.ObjectRow(
+                    tenantId, ref.objectType(), ref.objectId(), ref.firstSeen(), ref.lastSeen()));
+        }
+        for (TaskModels.ObjectRow row : indexed) {
+            merged.putIfAbsent(row.objectId(), row);
+        }
+        List<TaskModels.ObjectRow> result = new ArrayList<>(merged.values());
+        result.sort(java.util.Comparator.comparing(TaskModels.ObjectRow::lastSeen,
+                java.util.Comparator.nullsLast(java.util.Comparator.reverseOrder())));
+        return result.size() > size ? result.subList(0, size) : result;
     }
 
     public List<TagMeta> tags(String objectType) {
@@ -109,6 +138,7 @@ public class WorkbenchService {
         return tagMetaRepository.listVisibleOnline(tenantId).stream()
                 .filter(meta -> type == null || meta.supportsObjectType(type))
                 .filter(meta -> !"derived".equalsIgnoreCase(meta.tagType()))
+                .filter(meta -> meta.writable())
                 .toList();
     }
 
@@ -338,17 +368,23 @@ public class WorkbenchService {
 
     private SubmitResponse submitAdhoc(String tenantId, ConsoleUser user, SubmitRequest request,
                                        String bizRequestId) {
+        WorkbenchAccess.requireAdhoc();
         String objectType = trimToNull(request.objectType());
         String objectId = trimToNull(request.objectId());
         if (objectType == null || objectId == null) {
             throw new BizException(ErrorCode.PARAM_MISSING, "object_type 与 object_id 不能为空");
         }
         ObjectTypeMeta type = taskService.requireObjectType(objectType);
-        if (!type.idMatches(objectId)) {
-            throw new BizException(ErrorCode.PARAM_INVALID,
-                    "object_id 不符合 " + objectType + " 的格式要求: " + type.idPattern());
+        if (!type.idPresent(objectId)) {
+            throw new BizException(ErrorCode.PARAM_INVALID, "object_id 不能为空");
         }
         List<PreparedTag> prepared = validateTags(request.tags(), tenantId, objectType, null);
+        for (PreparedTag p : prepared) {
+            if (taskRepository.existsVerifiedTaskFor(tenantId, objectType, objectId, p.meta().tagCode())) {
+                throw new BizException(ErrorCode.TASK_VERIFIED_LOCK,
+                        "标签 " + p.meta().tagCode() + " 所属任务已验收，禁止临时修改；如需变更请新建任务");
+            }
+        }
         List<PreparedTag> normal = prepared.stream().filter(p -> !p.meta().needValueAudit()).toList();
         List<PreparedTag> sensitive = prepared.stream().filter(p -> p.meta().needValueAudit()).toList();
 
@@ -373,12 +409,18 @@ public class WorkbenchService {
                 RequestContext.getRequestId(), taskId, itemId, results);
     }
 
+    /** 该对象上被已验收任务锁定的标签（临时打标禁止修改） */
+    public List<String> verifiedLocks(String objectType, String objectId) {
+        WorkbenchAccess.requireWorkbench();
+        return taskRepository.verifiedTagCodes(WorkbenchAccess.requireTenant(), objectType, objectId);
+    }
+
     private void writeDirect(List<PreparedTag> prepared, String tenantId, String objectType, String objectId,
                              ConsoleUser user, String source, String extJson, String bizRequestId) {
         String operatorId = firstNonBlank(user.operatorId(), user.username());
         String operatorName = firstNonBlank(user.operatorName(), user.displayName());
         List<WriteRequest.WriteItem> items = prepared.stream().map(p -> new WriteRequest.WriteItem(
-                objectType, objectId, p.meta().tagCode(), p.value().tagValue(), null, null,
+                objectType, objectId, null, p.meta().tagCode(), p.value().tagValue(), null, null,
                 new OperatorDto(operatorId, operatorName, "human", user.operatorOrg()),
                 source, p.value().confidence(), p.value().remark(), p.value().evidenceUrl(),
                 extJson)).toList();

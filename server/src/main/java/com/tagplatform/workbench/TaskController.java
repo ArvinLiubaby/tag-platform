@@ -4,6 +4,7 @@ import com.tagplatform.common.ApiResponse;
 import com.tagplatform.common.RequestContext;
 import com.tagplatform.console.ConsoleUserService;
 import com.tagplatform.meta.repo.ObjectTypeRepository;
+import com.tagplatform.workbench.TaskModels.AcceptRequest;
 import com.tagplatform.workbench.TaskModels.AssignRequest;
 import com.tagplatform.workbench.TaskModels.CreateRequest;
 import com.tagplatform.workbench.TaskModels.ImportRequest;
@@ -117,6 +118,13 @@ public class TaskController {
         long total = taskService.itemTotal(id, status);
         return ApiResponse.ok(new ItemPage(page, normalizedSize, total,
                 taskService.itemViews(id, status, page, normalizedSize)));
+    }
+
+    @RequirePermission("op.task.accept")
+    @PostMapping("/{id}/accept")
+    public ApiResponse<TaskView> accept(@PathVariable("id") long id,
+                                        @RequestBody(required = false) AcceptRequest request) {
+        return ApiResponse.ok(taskService.accept(id, request));
     }
 
     @RequirePermission("op.task.review")

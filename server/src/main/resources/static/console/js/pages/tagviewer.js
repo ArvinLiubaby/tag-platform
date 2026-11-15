@@ -145,7 +145,8 @@ function renderList() {
     return '<button type="button" class="tv-item' + active + '" data-tag="' + esc(t.tag_code) + '">' +
       '<span class="tv-item-main"><b>' + esc(t.tag_name) +
       (derived ? ' <span class="badge badge-blue">组合</span>' : '') + '</b>' +
-      '<small class="mono">' + esc(t.tag_code) + ' · ' + esc(t.value_type) + ' · ' + esc(t.sensitivity || '') + '</small></span>' +
+      '<small class="mono">' + esc(t.tag_code) + ' · ' + esc(t.value_type) +
+      (t.unit ? ' · ' + esc(t.unit) : '') + ' · ' + esc(t.sensitivity || '') + '</small></span>' +
       '<span class="badge ' + (t.status === 'online' ? 'badge-green' : 'badge-gray') + '">' +
       (t.status === 'online' ? '在线' : '离线') + '</span></button>';
   }).join('');
@@ -159,7 +160,7 @@ function renderList() {
 
 function selectTag(tag) {
   tv.selected = tag;
-  tv.tenant = tv.tenant || workTenantId() || 'risk_control';
+  tv.tenant = tenantForTag(tag, tv.tenant);
   tv.tab = 'latest';
   tv.history = { page: 1, size: 20, objectId: '' };
   $('#content').querySelectorAll('[data-ttab]').forEach(function (b) {
@@ -179,6 +180,7 @@ function renderHead() {
   $('#tv-badges').innerHTML =
     '<span class="badge ' + (derived ? 'badge-blue' : 'badge-gray') + '">' + (derived ? '组合标签' : '原始标签') + '</span>' +
     '<span class="badge badge-gray">' + esc(t.value_type) + '</span>' +
+    (t.unit ? '<span class="badge badge-blue">单位 ' + esc(t.unit) + '</span>' : '') +
     '<span class="badge badge-gray">' + esc(t.sensitivity || '--') + '</span>' +
     (t.category_code ? '<span class="muted">类目 ' + esc(t.category_code) + '</span>' : '') +
     (t.object_type ? '<span class="muted">对象 ' + esc(t.object_type) + '</span>' : '');
@@ -217,6 +219,31 @@ function applyTenant() {
   loadSelected(tv.selected.tag_code, false);
 }
 
+/**
+ * 决定当前标签用哪个租户查值：标签列表是全局的（含其它租户与 PUBLIC），
+ * 若沿用「工作租户」会与该标签的适用租户不一致，接口直接 4003「标签对该租户不可见」。
+ * 规则：当前租户可用则保留；否则回落到标签归属租户（tenant_id 第一项）。
+ */
+function tenantForTag(tag, current) {
+  var cur = String(current || '').trim() || String(workTenantId() || '').trim();
+  var ids = String((tag && tag.tenant_id) || '').split(',').map(function (v) { return v.trim(); }).filter(Boolean);
+  if (!ids.length || ids.indexOf('PUBLIC') >= 0) return cur || 'risk_control';
+  if (cur && ids.indexOf(cur) >= 0) return cur;
+  return ids[0];
+}
+
+/** 4003（标签对该租户不可见）时补一句可操作提示，避免只显示错误码 */
+function tenantErrHint(msg) {
+  msg = msg || '请求失败';
+  if (/不可见/.test(msg) && tv.selected) {
+    var ids = String(tv.selected.tenant_id || '').split(',').map(function (v) { return v.trim(); }).filter(Boolean);
+    if (ids.length && ids.indexOf('PUBLIC') < 0) {
+      msg += '；该标签归属租户 ' + ids[0] + '，请把「租户」改为它后重试';
+    }
+  }
+  return msg;
+}
+
 function loadSelected(code, force) {
   if (!tv.selected) return;
   if (tv.tab === 'latest') loadLatest(); else loadHistory();
@@ -232,7 +259,7 @@ function loadLatest() {
     tv.latest = page;
     renderLatest(page);
   }).catch(function (e) {
-    host.innerHTML = emptyState('加载失败', e.message);
+    host.innerHTML = emptyState('加载失败', tenantErrHint(e.message));
   });
 }
 
@@ -249,7 +276,8 @@ function renderLatest(page) {
     page.rows.forEach(function (r) {
       var st = DERIVED_STATUS[r.status] || ['badge-gray', r.status];
       html += '<tr><td class="mono">' + esc(r.object_type) + ' / ' + esc(r.object_id) + '</td>' +
-        '<td class="cell-strong">' + esc(r.tag_value == null ? '--' : r.tag_value) + '</td>' +
+        '<td class="cell-strong">' + esc(r.tag_value == null ? '--' : r.tag_value) +
+          (page.unit ? ' <span class="cell-sub">' + esc(page.unit) + '</span>' : '') + '</td>' +
         '<td><span class="badge ' + st[0] + '">' + st[1] + '</span></td>' +
         '<td class="cell-sub" title="' + esc(r.detail || '') + '">' + esc(r.detail || '--') + '</td></tr>';
     });
@@ -263,7 +291,8 @@ function renderLatest(page) {
     '<th>操作时间</th><th>操作人</th><th>来源</th></tr></thead><tbody>';
   page.rows.forEach(function (r) {
     html += '<tr><td class="mono">' + esc(r.object_type) + ' / ' + esc(r.object_id) + '</td>' +
-      '<td class="cell-strong">' + esc(r.tag_value == null ? '--' : r.tag_value) + '</td>' +
+      '<td class="cell-strong">' + esc(r.tag_value == null ? '--' : r.tag_value) +
+        (page.unit ? ' <span class="cell-sub">' + esc(page.unit) + '</span>' : '') + '</td>' +
       '<td>' + badge(r.status) + '</td>' +
       '<td class="nowrap muted">' + fmtDt(r.biz_time) + '</td>' +
       '<td class="nowrap muted">' + fmtDt(r.operate_time) + '</td>' +
@@ -295,7 +324,9 @@ function loadHistory() {
       '<th>操作时间</th><th>操作人</th><th>来源</th></tr></thead><tbody>';
     page.records.forEach(function (r) {
       html += '<tr><td class="mono">' + esc(r.object_type) + ' / ' + esc(r.object_id) + '</td>' +
-        '<td class="cell-strong">' + esc(r.tag_value == null ? '--' : r.tag_value) + '</td>' +
+        '<td class="cell-strong">' + esc(r.tag_value == null ? '--' : r.tag_value) +
+          (page.units && page.units[r.tag_code]
+            ? ' <span class="cell-sub">' + esc(page.units[r.tag_code]) + '</span>' : '') + '</td>' +
         '<td>' + badge(r.status) + '</td>' +
         '<td class="nowrap muted">' + fmtDt(r.biz_time) + '</td>' +
         '<td class="nowrap muted">' + fmtDt(r.operate_time) + '</td>' +
@@ -307,7 +338,7 @@ function loadHistory() {
     pager.classList.remove('hidden');
     renderPager('#tv-pager', page.total, tv.history, loadHistory);
   }).catch(function (e) {
-    $('#tv-body').innerHTML = emptyState('加载失败', e.message);
+    $('#tv-body').innerHTML = emptyState('加载失败', tenantErrHint(e.message));
   });
 }
 

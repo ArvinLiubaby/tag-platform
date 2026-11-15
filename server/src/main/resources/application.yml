@@ -40,6 +40,17 @@ tag-platform:
     username: root
     password: ""
     init-schema: true
+  # Kafka 标签写入通道：与开放 API 同构的消息体，走同一写入链路；默认关闭
+  kafka:
+    enabled: ${TAG_PLATFORM_KAFKA_ENABLED:false}
+    bootstrap-servers: ${TAG_PLATFORM_KAFKA_SERVERS:}
+    topic: ${TAG_PLATFORM_KAFKA_TOPIC:profile_tag_write}
+    group-id: ${TAG_PLATFORM_KAFKA_GROUP:tag-platform-write}
+    dlq-topic: ${TAG_PLATFORM_KAFKA_DLQ_TOPIC:profile_tag_write_dlq}
+    # 消息未带 tenant_id 时的兜底租户；留空则该类消息直接进死信
+    default-tenant: ${TAG_PLATFORM_KAFKA_DEFAULT_TENANT:}
+    concurrency: ${TAG_PLATFORM_KAFKA_CONCURRENCY:1}
+    max-poll-records: 50
   limits:
     ip-qps: 100
     operator-qps: 20
@@ -49,7 +60,7 @@ tag-platform:
     nonce-ttl-seconds: 60
     idempotent-ttl-hours: 24
   console:
-    token-ttl-hours: 8
+    token-ttl-hours: 72
 
 management:
   endpoints:

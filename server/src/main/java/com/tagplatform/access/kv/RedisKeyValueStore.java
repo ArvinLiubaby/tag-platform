@@ -44,4 +44,18 @@ public class RedisKeyValueStore implements KeyValueStore {
         }
         return value == null ? 1L : value;
     }
+
+    @Override
+    public Optional<Duration> remainingTtl(String key) {
+        Long seconds = template.getExpire(key);
+        if (seconds == null || seconds < 0) {
+            return Optional.empty();
+        }
+        return Optional.of(Duration.ofSeconds(seconds));
+    }
+
+    @Override
+    public boolean expire(String key, Duration ttl) {
+        return Boolean.TRUE.equals(template.expire(key, ttl));
+    }
 }

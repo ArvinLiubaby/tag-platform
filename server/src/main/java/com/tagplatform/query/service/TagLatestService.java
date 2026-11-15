@@ -42,13 +42,13 @@ public class TagLatestService {
                             v.detail(), v.bizTime(), v.operateTime(), v.expireTime(), v.operatorName(), v.source()))
                     .toList();
             long matched = rows.stream().filter(r -> "effective".equals(r.status())).count();
-            return new TagLatestPage(tagCode, true, matched, rows.size(), rows);
+            return new TagLatestPage(tagCode, meta.unit(), true, matched, rows.size(), rows);
         }
         List<TagLatestPage.Row> rows = tagValueStore.listLatestByTag(tenantId, tagCode, size).stream()
                 .map(v -> new TagLatestPage.Row(v.objectType(), v.objectId(), v.tagValue(), v.status(), null,
                         v.bizTime(), v.operateTime(), v.expireTime(), v.operatorName(), v.source()))
                 .toList();
-        return new TagLatestPage(tagCode, false, tagValueStore.countLatestByTag(tenantId, tagCode), rows.size(), rows);
+        return new TagLatestPage(tagCode, meta.unit(), false, tagValueStore.countLatestByTag(tenantId, tagCode), rows.size(), rows);
     }
 
     /** 供其它模块复用：标签是否组合标签 */
