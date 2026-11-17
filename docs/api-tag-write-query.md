@@ -437,8 +437,8 @@ TagPlatformClient.WriteResult result = client.write(new TagPlatformClient.WriteR
 
 | 环境 | Broker | Topic |
 |---|---|---|
-| 测试 | `10.1.12.59:9092` | `profile_tag_write` |
-| 生产 | `172.16.0.131:9092`、`172.16.0.70:9092`、`172.16.0.178:9092` | `profile_tag_write` |
+| 测试 | `kafka-host:9092` | `profile_tag_write` |
+| 生产 | `kafka-prod-1:9092`、`kafka-prod-2:9092`、`kafka-prod-3:9092` | `profile_tag_write` |
 
 消费组 `tag-platform-write` 由平台维护，接入方只需向 topic 生产消息，**无需调用 HTTP、无需签名**。
 

@@ -26,8 +26,8 @@ public final class RolePermissionCatalog {
 
     private static final List<PermissionGroup> PAGE_GROUPS = List.of(
             new PermissionGroup("page", "页面访问", "控制台导航与页面入口；租户管理员的数据范围仅限本租户", List.of(
-                    item("page.dashboard", "数据看板", "全局开放 API 调用与标签运营看板（不含租户管理员）",
-                            "ADMIN", "TASK_MANAGER", "TAGGER", "AUDITOR", "VIEWER"),
+                    item("page.dashboard", "数据看板", "开放 API 调用与标签运营看板（租户管理员仅本租户）",
+                            "ADMIN", "TENANT_ADMIN", "TASK_MANAGER", "TAGGER", "AUDITOR", "VIEWER"),
                     item("page.workbench", "打标工作台", "对象搜索、画像 overlay 与动态打标表单",
                             "ADMIN", "TENANT_ADMIN", "TASK_MANAGER", "TAGGER", "AUDITOR"),
                     item("page.my_tasks", "我的任务", "待办对象与本人/任务池任务",

@@ -2,7 +2,7 @@
 import * as core from '../core.js';
 import { renderPager } from '../shared.js';
 
-const { $, esc, api, qs, toast, emptyState, badge, fmtDt, tableWrap, tableLoading, workTenantId, parseJsonValue } = core;
+const { $, esc, api, qs, toast, emptyState, badge, fmtDt, tableWrap, tableLoading, workTenantId, isAdmin, parseJsonValue } = core;
 
 const TYPE_LABEL = { fact: '事实', rule: '规则', algo: '算法', derived: '组合' };
 const OBJECT_TYPES = [
@@ -34,7 +34,7 @@ export function renderTagViewer() {
   tv.keyword = '';
   tv.kind = '';
   tv.objectType = '';
-  tv.tenant = workTenantId() || 'risk_control';
+  tv.tenant = workTenantId() || (isAdmin() ? 'risk_control' : '');
   tv.selected = null;
   tv.tab = 'latest';
   tv.latest = null;
@@ -192,8 +192,10 @@ function renderHead() {
 
 function renderTools() {
   var host = $('#tv-tools');
+  var tenantInput = '<label class="tv-tenant">租户 <input id="tv-tenant" value="' + esc(tv.tenant) + '"' +
+    (isAdmin() ? '' : ' readonly title="当前角色仅可查看本人租户"') + '></label>';
   if (tv.tab === 'latest') {
-    host.innerHTML = '<label class="tv-tenant">租户 <input id="tv-tenant" value="' + esc(tv.tenant) + '"></label>' +
+    host.innerHTML = tenantInput +
       '<span class="muted">' + (tv.selected && tv.selected.tag_type === 'derived'
         ? '抽样实时计算' : '读取 tag_value_latest') + '</span>';
     $('#tv-tenant').addEventListener('keydown', function (e) {
@@ -202,7 +204,7 @@ function renderTools() {
     $('#tv-tenant').addEventListener('change', applyTenant);
     return;
   }
-  host.innerHTML = '<label class="tv-tenant">租户 <input id="tv-tenant" value="' + esc(tv.tenant) + '"></label>' +
+  host.innerHTML = tenantInput +
     '<label class="tv-tenant">对象 ID <input id="tv-oid" value="' + esc(tv.history.objectId) + '" placeholder="可选"></label>' +
     '<button class="btn btn-ghost btn-sm" id="tv-his-query">查询</button>';
   $('#tv-his-query').addEventListener('click', function () {
@@ -220,12 +222,14 @@ function applyTenant() {
 }
 
 /**
- * 决定当前标签用哪个租户查值：标签列表是全局的（含其它租户与 PUBLIC），
- * 若沿用「工作租户」会与该标签的适用租户不一致，接口直接 4003「标签对该租户不可见」。
- * 规则：当前租户可用则保留；否则回落到标签归属租户（tenant_id 第一项）。
+ * 决定当前标签用哪个租户查值：
+ *   平台管理员：当前租户可用则保留，否则回落到标签归属租户（tenant_id 第一项）；
+ *   其他角色：后端强制按账号绑定租户取数，这里同样固定为绑定租户。
  */
 function tenantForTag(tag, current) {
-  var cur = String(current || '').trim() || String(workTenantId() || '').trim();
+  var bound = String(workTenantId() || '').trim();
+  if (!isAdmin() && bound) return bound;
+  var cur = String(current || '').trim() || bound;
   var ids = String((tag && tag.tenant_id) || '').split(',').map(function (v) { return v.trim(); }).filter(Boolean);
   if (!ids.length || ids.indexOf('PUBLIC') >= 0) return cur || 'risk_control';
   if (cur && ids.indexOf(cur) >= 0) return cur;
@@ -235,6 +239,7 @@ function tenantForTag(tag, current) {
 /** 4003（标签对该租户不可见）时补一句可操作提示，避免只显示错误码 */
 function tenantErrHint(msg) {
   msg = msg || '请求失败';
+  if (!isAdmin()) return msg;
   if (/不可见/.test(msg) && tv.selected) {
     var ids = String(tv.selected.tenant_id || '').split(',').map(function (v) { return v.trim(); }).filter(Boolean);
     if (ids.length && ids.indexOf('PUBLIC') < 0) {

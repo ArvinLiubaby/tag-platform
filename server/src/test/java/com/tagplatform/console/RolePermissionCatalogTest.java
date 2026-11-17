@@ -23,7 +23,7 @@ class RolePermissionCatalogTest {
                 assertThat(roleCodes).containsAll(item.roles())));
 
         assertThat(item(catalog, "page.users").roles()).containsExactly("ADMIN", "TENANT_ADMIN");
-        assertThat(item(catalog, "page.dashboard").roles()).doesNotContain("TENANT_ADMIN");
+        assertThat(item(catalog, "page.dashboard").roles()).contains("TENANT_ADMIN");
         assertThat(item(catalog, "op.tag.manage").roles()).containsExactly("ADMIN", "TENANT_ADMIN");
         assertThat(item(catalog, "op.tag.version.rollback").roles()).containsExactly("ADMIN", "TENANT_ADMIN");
         assertThat(item(catalog, "op.user.manage").roles()).containsExactly("ADMIN", "TENANT_ADMIN");
@@ -35,8 +35,8 @@ class RolePermissionCatalogTest {
         assertThat(RolePermissionCatalog.hasPermission("TAGGER", "page.tenants")).isFalse();
         assertThat(RolePermissionCatalog.menusForRole("TAGGER")).contains("workbench", "tags", "market")
                 .doesNotContain("tenants", "users", "logs", "audit");
-        assertThat(RolePermissionCatalog.menusForRole("TENANT_ADMIN")).contains("users", "roles", "tenants")
-                .doesNotContain("dashboard");
+        assertThat(RolePermissionCatalog.menusForRole("TENANT_ADMIN"))
+                .contains("users", "roles", "tenants", "dashboard");
         assertThat(RolePermissionCatalog.permissionsForRole("VIEWER")).doesNotContain("op.tag.manage");
     }
 

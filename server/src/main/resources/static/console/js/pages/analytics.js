@@ -20,7 +20,7 @@ const { TOKEN_KEY, USER_KEY, state, PAGE_TITLES, PAGE_SUBTITLES, STATUS_BADGE, R
       '    <div class="card-actions"><span class="muted">按对象与时间范围查询</span></div></div>' +
       '  <div class="card-body">' +
       '    <div class="filter-grid cols-4">' +
-      '      <div class="field"><span>租户 <i class="req">*</i></span><input id="rec-tenant" value="' + esc(workTenantId() || 'risk_control') + '"></div>' +
+      '      <div class="field"><span>租户 <i class="req">*</i></span><input id="rec-tenant" value="' + esc(workTenantId() || (isAdmin() ? 'risk_control' : '')) + '"' + (isAdmin() ? '' : ' readonly title="当前角色仅可查询本人租户"') + '></div>' +
       '      <div class="field"><span>操作员</span><input id="rec-operator" placeholder="OP1001"></div>' +
       '      <div class="field"><span>对象类型</span><input id="rec-otype" placeholder="全部类型，如 driver"></div>' +
       '      <div class="field"><span>对象 ID</span><input id="rec-oid" placeholder="DRV00001"></div>' +
@@ -48,7 +48,7 @@ const { TOKEN_KEY, USER_KEY, state, PAGE_TITLES, PAGE_SUBTITLES, STATUS_BADGE, R
       });
     }
     $('#rec-reset').addEventListener('click', function () {
-      $('#rec-tenant').value = workTenantId() || 'risk_control';
+      $('#rec-tenant').value = workTenantId() || (isAdmin() ? 'risk_control' : '');
       ['rec-operator', 'rec-otype', 'rec-oid', 'rec-tag', 'rec-from', 'rec-to'].forEach(function (id) {
         $('#' + id).value = '';
       });
@@ -114,7 +114,7 @@ const { TOKEN_KEY, USER_KEY, state, PAGE_TITLES, PAGE_SUBTITLES, STATUS_BADGE, R
       '    <div class="card-actions"><span class="muted">实时读取标签当前值</span></div></div>' +
       '  <div class="card-body">' +
       '    <div class="filter-grid">' +
-      '      <div class="field"><span>租户 <i class="req">*</i></span><input id="pf-tenant" value="' + esc(workTenantId() || 'risk_control') + '"></div>' +
+      '      <div class="field"><span>租户 <i class="req">*</i></span><input id="pf-tenant" value="' + esc(workTenantId() || (isAdmin() ? 'risk_control' : '')) + '"' + (isAdmin() ? '' : ' readonly title="当前角色仅可查询本人租户"') + '></div>' +
       '      <div class="field"><span>对象类型 <i class="req">*</i></span>' +
       '        <select id="pf-otype"><option value="driver">driver 司机</option>' +
       '        <option value="vehicle">vehicle 车辆</option></select></div>' +
@@ -206,7 +206,7 @@ const { TOKEN_KEY, USER_KEY, state, PAGE_TITLES, PAGE_SUBTITLES, STATUS_BADGE, R
       btn.addEventListener('click', function () {
         var parts = btn.getAttribute('data-example').split('|');
         $('#pf-otype').value = parts[0];
-        $('#pf-tenant').value = workTenantId() || 'risk_control';
+        $('#pf-tenant').value = workTenantId() || (isAdmin() ? 'risk_control' : '');
         $('#pf-oid').value = parts[1];
         $('#pf-oid').placeholder = parts[0] === 'driver' ? 'DRV85001' : 'VH10086';
         closeOidMenu();
@@ -1689,8 +1689,8 @@ const { TOKEN_KEY, USER_KEY, state, PAGE_TITLES, PAGE_SUBTITLES, STATUS_BADGE, R
       '<b>消息体与「标签推送」接口的请求体完全一致</b>，写入后的校验、幂等、任务联动、审计行为与调用 HTTP 接口相同。' +
       '适合已有消息队列、不想再维护 HTTP 签名与重试的场景。</div>' +
       docSection('连接信息', '<table class="doc-table"><thead><tr><th>环境</th><th>Broker</th><th>Topic</th></tr></thead><tbody>' +
-        '<tr><td>测试</td><td class="mono">10.1.12.59:9092</td><td class="mono">profile_tag_write</td></tr>' +
-        '<tr><td>生产</td><td class="mono">172.16.0.131:9092<br>172.16.0.70:9092<br>172.16.0.178:9092</td><td class="mono">profile_tag_write</td></tr>' +
+        '<tr><td>测试</td><td class="mono">kafka-host:9092</td><td class="mono">profile_tag_write</td></tr>' +
+        '<tr><td>生产</td><td class="mono">kafka-prod-1:9092<br>kafka-prod-2:9092<br>kafka-prod-3:9092</td><td class="mono">profile_tag_write</td></tr>' +
         '</tbody></table>' +
         '<div class="doc-note">消费组 <span class="code-inline">tag-platform-write</span> 由平台维护，接入方只需向 topic 生产消息。</div>') +
       docSection('消息体示例', docCode('doc-kafka-body', kafkaMsgBody)) +

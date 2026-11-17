@@ -264,6 +264,15 @@
     document.body.classList.remove('modal-open');
   }
 
+  /**
+   * 表单类弹窗（含输入框/下拉/文本域）禁止点击遮罩或 Esc 直接关闭，
+   * 避免误触导致已填写内容丢失；显式「取消」或右上角 × 仍可关闭。
+   */
+  function modalHasForm() {
+    return !!$('#modal-body').querySelector(
+      'input:not([type="hidden"]), textarea, select, [contenteditable="true"]');
+  }
+
   /* ---------------- API 封装 ---------------- */
   function api(path, options) {
     options = options || {};
@@ -542,7 +551,7 @@
     });
 
     document.addEventListener('keydown', function (e) {
-      if (e.key === 'Escape' && !$('#modal').classList.contains('hidden')) closeModal();
+      if (e.key === 'Escape' && !$('#modal').classList.contains('hidden') && !modalHasForm()) closeModal();
     });
 
     $('#login-form').addEventListener('submit', function (e) {
@@ -562,8 +571,9 @@
         loadPermissions().finally(function () {
           showApp();
           if (!location.hash) location.hash = '#/tags';
-          onAuthenticated();
+          // 先给欢迎提示，再执行路由校验：若当前路由无权限，跳转提示会覆盖欢迎提示
           toast('欢迎回来，' + data.data.display_name, 'ok');
+          onAuthenticated();
         });
       }).catch(function (e) {
         err.textContent = e.message;
@@ -575,7 +585,11 @@
     });
     bindUserMenu();
     $('#modal-close').addEventListener('click', closeModal);
-    $('#modal').addEventListener('click', function (e) { if (e.target === $('#modal')) closeModal(); });
+    $('#modal').addEventListener('click', function (e) {
+      if (e.target !== $('#modal')) return;
+      if (modalHasForm()) return; // 表单弹窗点空白不关闭，防止误操作丢失输入
+      closeModal();
+    });
   }
 
   function isAdmin() { return state.user && state.user.role === 'ADMIN'; }

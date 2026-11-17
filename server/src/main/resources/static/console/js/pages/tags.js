@@ -23,6 +23,8 @@ const { TOKEN_KEY, USER_KEY, state, PAGE_TITLES, PAGE_SUBTITLES, STATUS_BADGE, R
   }
 
   function renderTags() {
+    // 非平台管理员的租户筛选固定为本人租户，避免出现「全部租户」造成越权错觉
+    if (!isAdmin()) tagsState.tenantId = workTenantId() || '';
     $('#content').innerHTML =
       '<div id="tag-stats"></div>' +
       '<div class="card">' +
@@ -84,10 +86,10 @@ const { TOKEN_KEY, USER_KEY, state, PAGE_TITLES, PAGE_SUBTITLES, STATUS_BADGE, R
     $('#tag-reset').addEventListener('click', function () {
       tagsState.status = '';
       tagsState.keyword = '';
-      tagsState.tenantId = '';
+      tagsState.tenantId = isAdmin() ? '' : (workTenantId() || '');
       tagsState.sensitivity = '';
       tagsState.objectType = '';
-      $('#tag-tenant').value = '';
+      $('#tag-tenant').value = tagsState.tenantId;
       $('#tag-sensitivity').value = '';
       $('#tag-status').value = '';
       $('#tag-object').value = '';
@@ -127,7 +129,8 @@ const { TOKEN_KEY, USER_KEY, state, PAGE_TITLES, PAGE_SUBTITLES, STATUS_BADGE, R
         else if (t.status === 'offline') offline++;
       });
       host.innerHTML = statCards([
-        { label: '标签总数', value: rows.length, hint: '全部租户 · 不含归档与已删除', icon: 'tag' },
+        { label: '标签总数', value: rows.length,
+          hint: (isAdmin() ? '全部租户' : '当前租户') + ' · 不含归档与已删除', icon: 'tag' },
         { label: '已上线', value: online, hint: '可用于打标', tone: 'green', icon: 'check' },
         { label: '审核中', value: reviewing, hint: '等待定义审核', tone: 'amber', icon: 'clock' },
         { label: '已下线', value: offline, hint: '暂不可用', tone: 'gray', icon: 'pause' }
@@ -135,10 +138,18 @@ const { TOKEN_KEY, USER_KEY, state, PAGE_TITLES, PAGE_SUBTITLES, STATUS_BADGE, R
     }).catch(function () { host.innerHTML = ''; });
   }
 
-  /** 用全量标签中的租户 ID 填充筛选下拉（PUBLIC 置顶） */
+  /** 用全量标签中的租户 ID 填充筛选下拉（PUBLIC 置顶；非平台管理员仅保留本人租户） */
   function fillTenantOptions(rows) {
     var sel = $('#tag-tenant');
     if (!sel) return;
+    if (!isAdmin()) {
+      var own = workTenantId() || '';
+      sel.innerHTML = '<option value="' + esc(own) + '">' + esc(own) + '</option>';
+      sel.value = own;
+      sel.disabled = true;
+      tagsState.tenantId = own;
+      return;
+    }
     var current = tagsState.tenantId || sel.value;
     var tenants = [];
     (rows || []).forEach(function (t) {

@@ -12,7 +12,7 @@
 >
 > **接口前缀（2026-10-22 起）**：统一为 `/api/v1/open`（开放 API）与 `/api/v1/console`（控制台接口）；旧前缀 `/open/v1`、`/console/api` 在兼容期内继续可用，计划下个主版本移除。
 >
-> **版本号**：应用版本由父 POM 统一管理（当前 `1.22.11`），构建时生成 build-info；控制台通过 `GET /api/v1/console/system/version` 自动显示，不在静态页面硬编码。每次发布按 SemVer 升级父 POM 与子模块 `<parent><version>`。
+> **版本号**：应用版本由父 POM 统一管理（当前 `1.22.12`），构建时生成 build-info；控制台通过 `GET /api/v1/console/system/version` 自动显示，不在静态页面硬编码。每次发布按 SemVer 升级父 POM 与子模块 `<parent><version>`。
 
 ---
 

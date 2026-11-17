@@ -6,7 +6,7 @@
 
   <groupId>com.tagplatform</groupId>
   <artifactId>tag-platform-parent</artifactId>
-  <version>1.22.11</version>
+  <version>1.22.12</version>
   <packaging>pom</packaging>
   <name>tag-platform-parent</name>
   <description>标签画像采集平台（MVP）— 父工程</description>

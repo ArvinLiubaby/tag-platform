@@ -24,8 +24,9 @@ public class AnalyticsController {
 
     @GetMapping("/dashboard/overview")
     public ApiResponse<DashboardOverview> overview(
-            @RequestParam(value = "days", defaultValue = "7") int days) {
-        ConsolePermission.requireRole("ADMIN", "AUDITOR", "VIEWER", "TAGGER", "TASK_MANAGER");
-        return ApiResponse.ok(analyticsService.overview(days));
+            @RequestParam(value = "days", defaultValue = "7") int days,
+            @RequestParam(value = "tenantId", required = false) String tenantId) {
+        // 平台管理员可看全租户；其余角色（含租户管理员）只统计账号绑定租户
+        return ApiResponse.ok(analyticsService.overview(days, ConsolePermission.scopeTenant(tenantId)));
     }
 }

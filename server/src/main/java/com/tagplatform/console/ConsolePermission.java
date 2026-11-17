@@ -35,20 +35,34 @@ public final class ConsolePermission {
         }
     }
 
-    /** 非平台角色访问带 tenantId 的查询时，租户管理员强制限定为本租户 */
+    /**
+     * 控制台数据接口的租户范围：
+     *   ADMIN 可显式指定租户，未指定表示全租户；
+     *   其余角色（TENANT_ADMIN / TASK_MANAGER / TAGGER / AUDITOR / VIEWER）一律锁定账号绑定租户，
+     *   传入其他租户直接拒绝，避免只靠前端传参造成越权。
+     */
     public static String scopeTenant(String requestedTenantId) {
         requireAny();
-        if (!"TENANT_ADMIN".equals(RequestContext.getConsoleRole())) {
-            return requestedTenantId;
+        String requested = trimToNull(requestedTenantId);
+        if ("ADMIN".equals(RequestContext.getConsoleRole())) {
+            return requested;
         }
-        String own = RequestContext.getConsoleTenantId();
-        if (own == null || own.isBlank()) {
+        String own = trimToNull(RequestContext.getConsoleTenantId());
+        if (own == null) {
             throw new BizException(ErrorCode.CONSOLE_FORBIDDEN, "当前账号未绑定租户");
         }
-        if (requestedTenantId != null && !requestedTenantId.isBlank() && !own.equals(requestedTenantId)) {
+        if (requested != null && !own.equals(requested)) {
             throw new BizException(ErrorCode.CONSOLE_FORBIDDEN, "不能访问其他租户数据");
         }
         return own;
+    }
+
+    private static String trimToNull(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? null : trimmed;
     }
 
     public static void requireRole(String... roles) {

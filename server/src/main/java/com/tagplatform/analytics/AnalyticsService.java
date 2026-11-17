@@ -58,7 +58,7 @@ public class AnalyticsService {
                    COALESCE(SUM(success), 0)                                    AS success_calls,
                    COALESCE(AVG(duration_ms), 0)                                AS avg_ms
               FROM api_call_log
-             WHERE called_at >= ?
+             WHERE called_at >= ?%s
             """;
 
     private static final String TREND_HOUR_SQL = """
@@ -67,7 +67,7 @@ public class AnalyticsService {
                    COALESCE(SUM(write_count), 0)     AS writes,
                    COALESCE(SUM(query_count), 0)     AS queries
               FROM api_call_log
-             WHERE called_at >= ?
+             WHERE called_at >= ?%s
              GROUP BY HOUR(called_at)
              ORDER BY h
             """;
@@ -78,7 +78,7 @@ public class AnalyticsService {
                    COALESCE(SUM(write_count), 0)     AS writes,
                    COALESCE(SUM(query_count), 0)     AS queries
               FROM api_call_log
-             WHERE called_at >= ?
+             WHERE called_at >= ?%s
              GROUP BY DATE(called_at)
              ORDER BY d
             """;
@@ -90,7 +90,7 @@ public class AnalyticsService {
                    SUM(success) * 1.0 / COUNT(*)             AS success_rate,
                    COALESCE(AVG(duration_ms), 0)             AS avg_ms
               FROM api_call_log
-             WHERE called_at >= ?
+             WHERE called_at >= ?%s
              GROUP BY method, endpoint
              ORDER BY calls DESC
              LIMIT ?
@@ -104,7 +104,7 @@ public class AnalyticsService {
                    COALESCE(SUM(l.query_count), 0)                          AS queries
               FROM api_call_log l
               LEFT JOIN tenant t ON t.tenant_id = l.tenant_id
-             WHERE l.called_at >= ?
+             WHERE l.called_at >= ?%s
              GROUP BY l.tenant_id, t.tenant_name
              ORDER BY calls DESC
              LIMIT ?
@@ -116,7 +116,7 @@ public class AnalyticsService {
                    SUM(s.access_count)                          AS cnt
               FROM tag_access_daily s
               LEFT JOIN tag_meta m ON m.tag_code = s.tag_code
-             WHERE s.stat_date >= ? AND s.action = ?
+             WHERE s.stat_date >= ? AND s.action = ?%s
              GROUP BY s.tag_code, m.tag_name
              ORDER BY cnt DESC
              LIMIT ?
@@ -126,6 +126,7 @@ public class AnalyticsService {
             SELECT called_at, tenant_id, app_key, method, endpoint, http_status, biz_code, success,
                    duration_ms, operator_id, write_count, query_count, delete_count
               FROM api_call_log
+             WHERE 1 = 1%s
              ORDER BY called_at DESC, id DESC
              LIMIT ?
             """;
@@ -178,35 +179,48 @@ public class AnalyticsService {
     // ------------------------------------------------------------------ dashboard
 
     public DashboardOverview overview(int days) {
+        return overview(days, null);
+    }
+
+    /**
+     * @param tenantId 为空表示全租户（仅平台管理员）；非空时所有指标只统计该租户
+     */
+    public DashboardOverview overview(int days, String tenantId) {
         int d = (days == 1 || days == 7 || days == 30) ? days : 7;
         LocalDate end = LocalDate.now();
         LocalDate startDate = d == 1 ? end : end.minusDays(d - 1);
         LocalDateTime start = startDate.atStartOfDay();
+        String scope = tenantId == null || tenantId.isBlank() ? null : tenantId.trim();
 
-        Kpi kpi = loadKpi(start);
-        List<TrendPoint> trend = loadTrend(d, startDate, start);
-        List<EndpointStat> endpoints = loadEndpoints(start);
-        List<TenantStat> tenants = loadTenants(start);
-        List<TagStat> topWrite = loadTopTags(startDate, "write");
-        List<TagStat> topQuery = loadTopTags(startDate, "query");
-        List<CallRow> recent = loadRecent();
+        Kpi kpi = loadKpi(start, scope);
+        List<TrendPoint> trend = loadTrend(d, startDate, start, scope);
+        List<EndpointStat> endpoints = loadEndpoints(start, scope);
+        List<TenantStat> tenants = loadTenants(start, scope);
+        List<TagStat> topWrite = loadTopTags(startDate, "write", scope);
+        List<TagStat> topQuery = loadTopTags(startDate, "query", scope);
+        List<CallRow> recent = loadRecent(scope);
         return new DashboardOverview(d, startDate.toString(), end.toString(), kpi, trend, endpoints, tenants,
                 topWrite, topQuery, recent);
     }
 
-    private Kpi loadKpi(LocalDateTime start) {
-        Kpi kpi = jdbcTemplate.queryForObject(KPI_SQL, (rs, rowNum) -> {
-            long calls = rs.getLong("calls");
-            long successCalls = rs.getLong("success_calls");
-            double rate = calls == 0 ? 0.0 : round4(successCalls * 1.0 / calls);
-            return new Kpi(calls, rs.getLong("writes"), rs.getLong("queries"), rs.getLong("deletes"),
-                    rs.getLong("active_tenants"), rs.getLong("active_apps"), rate,
-                    Math.round(rs.getDouble("avg_ms")));
-        }, start);
+    private Kpi loadKpi(LocalDateTime start, String tenantId) {
+        String sql = KPI_SQL.formatted(tenantId == null ? "" : " AND tenant_id = ?");
+        Kpi kpi = tenantId == null
+                ? jdbcTemplate.queryForObject(sql, (rs, rowNum) -> toKpi(rs), start)
+                : jdbcTemplate.queryForObject(sql, (rs, rowNum) -> toKpi(rs), start, tenantId);
         return kpi == null ? new Kpi(0, 0, 0, 0, 0, 0, 0, 0) : kpi;
     }
 
-    private List<TrendPoint> loadTrend(int days, LocalDate startDate, LocalDateTime start) {
+    private static Kpi toKpi(java.sql.ResultSet rs) throws java.sql.SQLException {
+        long calls = rs.getLong("calls");
+        long successCalls = rs.getLong("success_calls");
+        double rate = calls == 0 ? 0.0 : round4(successCalls * 1.0 / calls);
+        return new Kpi(calls, rs.getLong("writes"), rs.getLong("queries"), rs.getLong("deletes"),
+                rs.getLong("active_tenants"), rs.getLong("active_apps"), rate,
+                Math.round(rs.getDouble("avg_ms")));
+    }
+
+    private List<TrendPoint> loadTrend(int days, LocalDate startDate, LocalDateTime start, String tenantId) {
         if (days == 1) {
             Map<Integer, TrendPoint> points = new TreeMap<>();
             int currentHour = LocalDateTime.now().getHour();
@@ -218,7 +232,12 @@ public class AnalyticsService {
                 points.put(h, new TrendPoint(hourLabel(h), rs.getLong("calls"),
                         rs.getLong("writes"), rs.getLong("queries")));
             };
-            jdbcTemplate.query(TREND_HOUR_SQL, handler, start);
+            String sql = TREND_HOUR_SQL.formatted(tenantId == null ? "" : " AND tenant_id = ?");
+            if (tenantId == null) {
+                jdbcTemplate.query(sql, handler, start);
+            } else {
+                jdbcTemplate.query(sql, handler, start, tenantId);
+            }
             return new ArrayList<>(points.values());
         }
 
@@ -231,39 +250,65 @@ public class AnalyticsService {
             points.put(date, new TrendPoint(date.format(MM_DD), rs.getLong("calls"),
                     rs.getLong("writes"), rs.getLong("queries")));
         };
-        jdbcTemplate.query(TREND_DATE_SQL, handler, start);
+        String sql = TREND_DATE_SQL.formatted(tenantId == null ? "" : " AND tenant_id = ?");
+        if (tenantId == null) {
+            jdbcTemplate.query(sql, handler, start);
+        } else {
+            jdbcTemplate.query(sql, handler, start, tenantId);
+        }
         return new ArrayList<>(points.values());
     }
 
-    private List<EndpointStat> loadEndpoints(LocalDateTime start) {
-        return jdbcTemplate.query(ENDPOINT_SQL, (rs, rowNum) -> new EndpointStat(
-                rs.getString("method"), rs.getString("endpoint"), rs.getLong("calls"),
-                round4(rs.getDouble("success_rate")), Math.round(rs.getDouble("avg_ms"))), start, 10);
+    private List<EndpointStat> loadEndpoints(LocalDateTime start, String tenantId) {
+        String sql = ENDPOINT_SQL.formatted(tenantId == null ? "" : " AND tenant_id = ?");
+        return tenantId == null
+                ? jdbcTemplate.query(sql, (rs, rowNum) -> new EndpointStat(
+                        rs.getString("method"), rs.getString("endpoint"), rs.getLong("calls"),
+                        round4(rs.getDouble("success_rate")), Math.round(rs.getDouble("avg_ms"))), start, 10)
+                : jdbcTemplate.query(sql, (rs, rowNum) -> new EndpointStat(
+                        rs.getString("method"), rs.getString("endpoint"), rs.getLong("calls"),
+                        round4(rs.getDouble("success_rate")), Math.round(rs.getDouble("avg_ms"))),
+                        start, tenantId, 10);
     }
 
-    private List<TenantStat> loadTenants(LocalDateTime start) {
-        return jdbcTemplate.query(TENANT_SQL, (rs, rowNum) -> new TenantStat(
-                rs.getString("tenant_id"), rs.getString("tenant_name"), rs.getLong("calls"),
-                rs.getLong("writes"), rs.getLong("queries")), start, 8);
+    private List<TenantStat> loadTenants(LocalDateTime start, String tenantId) {
+        String sql = TENANT_SQL.formatted(tenantId == null ? "" : " AND l.tenant_id = ?");
+        return tenantId == null
+                ? jdbcTemplate.query(sql, (rs, rowNum) -> new TenantStat(
+                        rs.getString("tenant_id"), rs.getString("tenant_name"), rs.getLong("calls"),
+                        rs.getLong("writes"), rs.getLong("queries")), start, 8)
+                : jdbcTemplate.query(sql, (rs, rowNum) -> new TenantStat(
+                        rs.getString("tenant_id"), rs.getString("tenant_name"), rs.getLong("calls"),
+                        rs.getLong("writes"), rs.getLong("queries")), start, tenantId, 8);
     }
 
-    private List<TagStat> loadTopTags(LocalDate startDate, String action) {
-        return jdbcTemplate.query(TOP_TAG_SQL, (rs, rowNum) -> new TagStat(
-                rs.getString("tag_code"), rs.getString("tag_name"), rs.getLong("cnt")),
-                Date.valueOf(startDate), action, 8);
+    private List<TagStat> loadTopTags(LocalDate startDate, String action, String tenantId) {
+        String sql = TOP_TAG_SQL.formatted(tenantId == null ? "" : " AND s.tenant_id = ?");
+        return tenantId == null
+                ? jdbcTemplate.query(sql, (rs, rowNum) -> new TagStat(
+                        rs.getString("tag_code"), rs.getString("tag_name"), rs.getLong("cnt")),
+                        Date.valueOf(startDate), action, 8)
+                : jdbcTemplate.query(sql, (rs, rowNum) -> new TagStat(
+                        rs.getString("tag_code"), rs.getString("tag_name"), rs.getLong("cnt")),
+                        Date.valueOf(startDate), action, tenantId, 8);
     }
 
-    private List<CallRow> loadRecent() {
-        return jdbcTemplate.query(RECENT_SQL, (rs, rowNum) -> {
-            Object bizCodeValue = rs.getObject("biz_code");
-            Integer bizCode = bizCodeValue == null ? null : ((Number) bizCodeValue).intValue();
-            return new CallRow(
-                    rs.getTimestamp("called_at").toLocalDateTime(),
-                    rs.getString("tenant_id"), rs.getString("app_key"), rs.getString("method"),
-                    rs.getString("endpoint"), rs.getInt("http_status"), bizCode,
-                    rs.getInt("success") == 1, rs.getLong("duration_ms"), rs.getString("operator_id"),
-                    rs.getLong("write_count"), rs.getLong("query_count"), rs.getLong("delete_count"));
-        }, 15);
+    private List<CallRow> loadRecent(String tenantId) {
+        String sql = RECENT_SQL.formatted(tenantId == null ? "" : " AND tenant_id = ?");
+        return tenantId == null
+                ? jdbcTemplate.query(sql, (rs, rowNum) -> toCallRow(rs), 15)
+                : jdbcTemplate.query(sql, (rs, rowNum) -> toCallRow(rs), tenantId, 15);
+    }
+
+    private static CallRow toCallRow(java.sql.ResultSet rs) throws java.sql.SQLException {
+        Object bizCodeValue = rs.getObject("biz_code");
+        Integer bizCode = bizCodeValue == null ? null : ((Number) bizCodeValue).intValue();
+        return new CallRow(
+                rs.getTimestamp("called_at").toLocalDateTime(),
+                rs.getString("tenant_id"), rs.getString("app_key"), rs.getString("method"),
+                rs.getString("endpoint"), rs.getInt("http_status"), bizCode,
+                rs.getInt("success") == 1, rs.getLong("duration_ms"), rs.getString("operator_id"),
+                rs.getLong("write_count"), rs.getLong("query_count"), rs.getLong("delete_count"));
     }
 
     private static String hourLabel(int hour) {

@@ -39,9 +39,7 @@ public class ConsoleAuditController {
     @GetMapping("/audit/pending")
     public ApiResponse<List<TagValue>> pending(@RequestParam(value = "limit", defaultValue = "200") int limit) {
         ConsolePermission.requireRole("ADMIN", "TENANT_ADMIN", "AUDITOR");
-        String tenantId = "TENANT_ADMIN".equals(RequestContext.getConsoleRole())
-                ? ConsolePermission.scopeTenant(null) : null;
-        return ApiResponse.ok(auditValueService.pending(tenantId, limit));
+        return ApiResponse.ok(auditValueService.pending(ConsolePermission.scopeTenant(null), limit));
     }
 
     @RequirePermission("op.audit.value")
@@ -49,7 +47,8 @@ public class ConsoleAuditController {
     public ApiResponse<TagValue> approve(@RequestBody DecisionBody body) {
         ConsolePermission.requireRole("ADMIN", "AUDITOR");
         checkBody(body);
-        return ApiResponse.ok(auditValueService.approve(body.tenantId(), body.objectType(), body.objectId(),
+        return ApiResponse.ok(auditValueService.approve(
+                ConsolePermission.scopeTenant(body.tenantId()), body.objectType(), body.objectId(),
                 body.tagCode(), RequestContext.getConsoleDisplayName(), body.auditRemark()));
     }
 
@@ -58,7 +57,8 @@ public class ConsoleAuditController {
     public ApiResponse<TagValue> reject(@RequestBody DecisionBody body) {
         ConsolePermission.requireRole("ADMIN", "AUDITOR");
         checkBody(body);
-        return ApiResponse.ok(auditValueService.reject(body.tenantId(), body.objectType(), body.objectId(),
+        return ApiResponse.ok(auditValueService.reject(
+                ConsolePermission.scopeTenant(body.tenantId()), body.objectType(), body.objectId(),
                 body.tagCode(), RequestContext.getConsoleDisplayName(), body.auditRemark()));
     }
 
